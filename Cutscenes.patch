@@ -1,0 +1,3270 @@
+ src/server/game/Conditions/ConditionMgr.cpp        |  68 +-
+ src/server/game/Conditions/ConditionMgr.h          |   2 +
+ src/server/game/Cutscenes/Cutscene.cpp             | 745 ++++++++++++++++++++
+ src/server/game/Cutscenes/Cutscene.h               | 160 +++++
+ src/server/game/Cutscenes/CutsceneAction.cpp       | 261 +++++++
+ src/server/game/Cutscenes/CutsceneAction.h         | 307 ++++++++
+ src/server/game/Cutscenes/CutsceneMgr.cpp          | 772 +++++++++++++++++++++
+ src/server/game/Cutscenes/CutsceneMgr.h            |  87 +++
+ src/server/game/Entities/Object/Object.cpp         |  33 +-
+ src/server/game/Entities/Object/Object.h           |  15 +
+ src/server/game/Entities/Player/Player.cpp         |  19 +
+ src/server/game/Handlers/ChatHandler.cpp           |  26 +
+ src/server/game/Handlers/SpellHandler.cpp          |  10 +
+ src/server/game/Maps/Map.cpp                       |  79 +++
+ src/server/game/Maps/Map.h                         |  21 +
+ src/server/game/Spells/SpellInfo.cpp               |   5 +
+ src/server/game/World/World.cpp                    |   8 +
+ src/server/scripts/Custom/cs_cutscene.cpp          |  80 +++
+ src/server/scripts/Custom/custom_script_loader.cpp |   7 +
+ src/server/scripts/Custom/npc_cutscene.cpp         | 110 +++
+ src/server/scripts/Custom/spell_cutscene.cpp       |  62 ++
+ 21 files changed, 2874 insertions(+), 3 deletions(-)
+ create mode 100644 src/server/game/Cutscenes/Cutscene.cpp
+ create mode 100644 src/server/game/Cutscenes/Cutscene.h
+ create mode 100644 src/server/game/Cutscenes/CutsceneAction.cpp
+ create mode 100644 src/server/game/Cutscenes/CutsceneAction.h
+ create mode 100644 src/server/game/Cutscenes/CutsceneMgr.cpp
+ create mode 100644 src/server/game/Cutscenes/CutsceneMgr.h
+ create mode 100644 src/server/scripts/Custom/cs_cutscene.cpp
+ create mode 100644 src/server/scripts/Custom/npc_cutscene.cpp
+ create mode 100644 src/server/scripts/Custom/spell_cutscene.cpp
+
+diff --git a/src/server/game/Conditions/ConditionMgr.cpp b/src/server/game/Conditions/ConditionMgr.cpp
+index ca9c9aee..864c7ed4 100644
+--- a/src/server/game/Conditions/ConditionMgr.cpp
++++ b/src/server/game/Conditions/ConditionMgr.cpp
+@@ -17,6 +17,7 @@
+ 
+ #include "ConditionMgr.h"
+ #include "AchievementMgr.h"
++#include "Containers.h"
+ #include "DatabaseEnv.h"
+ #include "GameEventMgr.h"
+ #include "GameObject.h"
+@@ -967,7 +968,8 @@ bool ConditionMgr::CanHaveSourceGroupSet(ConditionSourceType sourceType)
+             sourceType == CONDITION_SOURCE_TYPE_SPELL_IMPLICIT_TARGET ||
+             sourceType == CONDITION_SOURCE_TYPE_SPELL_CLICK_EVENT ||
+             sourceType == CONDITION_SOURCE_TYPE_SMART_EVENT ||
+-            sourceType == CONDITION_SOURCE_TYPE_NPC_VENDOR);
++            sourceType == CONDITION_SOURCE_TYPE_NPC_VENDOR ||
++            sourceType == CONDITION_SOURCE_TYPE_OBJECT_ID_VISIBILITY);
+ }
+ 
+ bool ConditionMgr::CanHaveSourceIdSet(ConditionSourceType sourceType)
+@@ -1089,6 +1091,16 @@ bool ConditionMgr::IsSpellUsedInSpellClickConditions(uint32 spellId) const
+     return SpellsUsedInSpellClickConditions.find(spellId) != SpellsUsedInSpellClickConditions.end();
+ }
+ 
++bool ConditionMgr::IsObjectMeetingVisibilityByObjectIdConditions(uint32 objectType, uint32 entry, WorldObject* seer) const
++{
++    if (ConditionContainer const* conditions = Trinity::Containers::MapGetValuePtr(ObjectVisibilityConditionStore, { objectType, entry }))
++    {
++        TC_LOG_DEBUG("condition", "IsObjectMeetingVisibilityByObjectIdConditions: found conditions for objectType %u entry %u", objectType, entry);
++        return IsObjectMeetToConditions(seer, *conditions);
++    }
++    return true;
++}
++
+ ConditionMgr* ConditionMgr::instance()
+ {
+     static ConditionMgr instance;
+@@ -1321,6 +1333,13 @@ void ConditionMgr::LoadConditions(bool isReload)
+                     ++count;
+                     continue;
+                 }
++                case CONDITION_SOURCE_TYPE_OBJECT_ID_VISIBILITY:
++                {
++                    ObjectVisibilityConditionStore[{ cond->SourceGroup, uint32(cond->SourceEntry) }].push_back(cond);
++                    valid = true;
++                    ++count;
++                    continue;
++                }
+                 default:
+                     break;
+             }
+@@ -1892,6 +1911,47 @@ bool ConditionMgr::isSourceTypeValid(Condition* cond) const
+             TC_LOG_ERROR("sql.sql", "CONDITION_SOURCE_TYPE_CONVERSATION_LINE: is only for master branch, skipped");
+             return false;
+         }
++        case CONDITION_SOURCE_TYPE_AREATRIGGER_CLIENT_TRIGGERED:
++        {
++            TC_LOG_ERROR("sql.sql", "CONDITION_SOURCE_TYPE_AREATRIGGER_CLIENT_TRIGGERED: is only for master branch, skipped");
++            return false;
++        }
++        case CONDITION_SOURCE_TYPE_TRAINER_SPELL:
++        {
++            TC_LOG_ERROR("sql.sql", "CONDITION_SOURCE_TYPE_TRAINER_SPELL: is only for master branch, skipped");
++            return false;
++        }
++        case CONDITION_SOURCE_TYPE_OBJECT_ID_VISIBILITY:
++        {
++            if (cond->SourceGroup <= 0 || cond->SourceGroup >= NUM_CLIENT_OBJECT_TYPES)
++            {
++                TC_LOG_ERROR("sql.sql", "%s SourceGroup in `condition` table, is no valid object type, ignoring.", cond->ToString().c_str());
++                return false;
++            }
++
++            if (cond->SourceGroup == TYPEID_UNIT)
++            {
++                if (!sObjectMgr->GetCreatureTemplate(cond->SourceEntry))
++                {
++                    TC_LOG_ERROR("sql.sql", "%s SourceEntry in `condition` table, does not exist in `creature_template`, ignoring.", cond->ToString().c_str());
++                    return false;
++                }
++            }
++            else if (cond->SourceGroup == TYPEID_GAMEOBJECT)
++            {
++                if (!sObjectMgr->GetGameObjectTemplate(cond->SourceEntry))
++                {
++                    TC_LOG_ERROR("sql.sql", "%s SourceEntry in `condition` table, does not exist in `gameobject_template`, ignoring.", cond->ToString().c_str());
++                    return false;
++                }
++            }
++            else
++            {
++                TC_LOG_ERROR("sql.sql", "%s SourceGroup in `condition` table, uses unchecked type id, ignoring.", cond->ToString().c_str());
++                return false;
++            }
++            break;
++        }
+         case CONDITION_SOURCE_TYPE_GOSSIP_MENU:
+         case CONDITION_SOURCE_TYPE_GOSSIP_MENU_OPTION:
+         case CONDITION_SOURCE_TYPE_SMART_EVENT:
+@@ -2486,6 +2546,12 @@ void ConditionMgr::Clean()
+ 
+     NpcVendorConditionContainerStore.clear();
+ 
++    for (auto&& [_, conditions] : ObjectVisibilityConditionStore)
++        for (Condition* condition : conditions)
++            delete condition;
++
++    ObjectVisibilityConditionStore.clear();
++
+     // this is a BIG hack, feel free to fix it if you can figure out the ConditionMgr ;)
+     for (std::vector<Condition*>::const_iterator itr = AllocatedMemoryStore.begin(); itr != AllocatedMemoryStore.end(); ++itr)
+         delete *itr;
+diff --git a/src/server/game/Conditions/ConditionMgr.h b/src/server/game/Conditions/ConditionMgr.h
+index b31ebb9f..c11a4783 100644
+--- a/src/server/game/Conditions/ConditionMgr.h
++++ b/src/server/game/Conditions/ConditionMgr.h
+@@ -278,6 +278,7 @@ class TC_GAME_API ConditionMgr
+         bool IsObjectMeetingVendorItemConditions(uint32 creatureId, uint32 itemId, Player* player, Creature* vendor) const;
+ 
+         bool IsSpellUsedInSpellClickConditions(uint32 spellId) const;
++        bool IsObjectMeetingVisibilityByObjectIdConditions(uint32 objectType, uint32 entry, WorldObject* seer) const;
+ 
+         struct ConditionTypeInfo
+         {
+@@ -310,6 +311,7 @@ class TC_GAME_API ConditionMgr
+         SmartEventConditionContainer    SmartEventConditionStore;
+ 
+         std::unordered_set<uint32> SpellsUsedInSpellClickConditions;
++        std::unordered_map<std::pair<uint32 /*object type*/, uint32 /*object id*/>, ConditionContainer> ObjectVisibilityConditionStore;
+ };
+ 
+ #define sConditionMgr ConditionMgr::instance()
+diff --git a/src/server/game/Cutscenes/Cutscene.cpp b/src/server/game/Cutscenes/Cutscene.cpp
+new file mode 100644
+index 00000000..af454955
+--- /dev/null
++++ b/src/server/game/Cutscenes/Cutscene.cpp
+@@ -0,0 +1,745 @@
++/*
++ * Cutscene
++ * At init:
++ * for target:
++ unattackable,
++ uninteractable but selectable,
++ SetClientControl(false),
++ scene aura (custom duration, removed at map change)
++ TODOS:
++ instance id
++ */
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "Chat.h"
++#include "Cutscene.h"
++#include "CutsceneMgr.h"
++#include "Map.h"
++#include "MapManager.h"
++#include "MotionMaster.h"
++#include "Player.h"
++#include "ScriptMgr.h"
++#include "SpellAuras.h"
++#include "TemporarySummon.h"
++
++#if defined(MOD_PRESENT_NPCBOTS) && MOD_PRESENT_NPCBOTS == 1
++ //#include "botmgr.h"
++#endif
++
++constexpr int32 TIMER_START_POS = -2000;
++
++static uint32 NextCutsceneGuid = 1;
++static uint32 GenerateCutsceneGuid()
++{
++    return NextCutsceneGuid++;
++}
++
++Cutscene::Cutscene(Player* instigator, uint32 id) :
++    _instigator(instigator), _map(sMapMgr->FindMap(instigator->GetMapId(), instigator->GetInstanceId())),
++    _id(id), _guid(GenerateCutsceneGuid()), _timer(TIMER_START_POS), _state(CutsceneStates::STATE_NEW)
++{
++    _cutsceneData = sCutsceneMgr->GetCutsceneData(GetId());
++
++    ASSERT(_map);
++    ASSERT(_cutsceneData);
++}
++
++bool Cutscene::CanCreate() const
++{
++    ChatHandler ch(_instigator->GetSession());
++
++    if (_state != CutsceneStates::STATE_NEW)
++    {
++        ch.PSendSysMessage("Cutscene::CanCreate(): id %u, guid %u called while not new!", GetId(), GetGuid());
++        return false;
++    }
++
++    if (_map->GetId() != GetData()->mapId)
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - wrong map id!", GetId());
++        return false;
++    }
++
++    if (_instigator->GetCharmerOrOwnerOrOwnGUID() != _instigator->GetGUID() || _instigator->GetGuidValue(PLAYER_FARSIGHT) ||
++        _instigator->GetAI() || _instigator->IsInFlight() || _instigator->GetSession()->isLogingOut() || _instigator->IsBeingTeleported())
++    {
++        //silent
++        //ch.PSendSysMessage("Can't start cutscene %u - can't do that right now", GetId());
++        return false;
++    }
++
++    if (_instigator->GetVehicle() || _instigator->GetCharmedGUID() ||
++        (_instigator->GetMinionGUID() && _instigator->GetMinionGUID() != _instigator->GetPetGUID()))
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - controlling other(non-pet) unit or object", GetId());
++        return false;
++    }
++
++    //TODO: add npcbots support
++#if defined(MOD_PRESENT_NPCBOTS) && MOD_PRESENT_NPCBOTS == 1
++    //if (_instigator->HaveBot() && !_instigator->GetBotMgr()->GetBotsHidden())
++    //{
++    //    ch.PSendSysMessage("Can't start cutscene %u - NPCBots are not hidden", GetId());
++    //    return false;
++    //}
++#endif
++
++    if (_instigator->IsMounted() || !_instigator->CanFreeMove() || _instigator->IsWalking())
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - non-standard movement mode (mounted, snared, or walking)", GetId());
++        return false;
++    }
++
++    if (_instigator->duel || _instigator->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE)/* ||
++        _instigator->IsInCombat() || _instigator->GetVictim()*/) //TODO
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - in combat", GetId());
++        return false;
++    }
++
++    if (_instigator->IsUnderWater() || _instigator->IsMirrorTimerActive(FATIGUE_TIMER) ||
++        _instigator->IsMirrorTimerActive(BREATH_TIMER) || _instigator->IsMirrorTimerActive(FIRE_TIMER))
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - dangerous environment", GetId());
++        return false;
++    }
++
++    //TODO
++    //if (_instigator->GetCurrentSpell(CURRENT_MELEE_SPELL) || _instigator->GetCurrentSpell(CURRENT_GENERIC_SPELL) ||
++    //    _instigator->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || _instigator->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
++    //{
++    //    ch.PSendSysMessage("Can't start cutscene %u - casting", GetId());
++    //    return false;
++    //}
++    //if (_instigator->isMoving())
++    //{
++    //    ch.PSendSysMessage("Can't start cutscene %u - moving", GetId());
++    //    return false;
++    //}
++
++    //TODO: enable support for instances
++    if (_instigator->GetInstanceId())
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - in instance", GetId());
++        return false;
++    }
++
++    if (GetDuration() < CUTSCENE_MIN_DURATION || GetDuration() > CUTSCENE_MAX_DURATION)
++    {
++        ch.PSendSysMessage("Can't start cutscene %u - duration is out of bounds: %u, allowed %u to %u",
++            GetId(), GetDuration(), CUTSCENE_MIN_DURATION, CUTSCENE_MAX_DURATION);
++        return false;
++    }
++
++    return true;
++}
++
++Creature* Cutscene::_summonCreature(uint32 entry, float x, float y, float z, float o)
++{
++    Creature* creature = GetMap()->SummonCreature(entry, Position(x, y, z, o), nullptr, GetDuration() + 1000u + uint32(std::abs(TIMER_START_POS)));
++    return creature;
++}
++
++GameObject* Cutscene::_summonGameObject(uint32 entry, float x, float y, float z, float o)
++{
++    GameObjectTemplate const* goinfo = sObjectMgr->GetGameObjectTemplate(entry);
++    ASSERT(goinfo);
++
++    GameObject* go = new GameObject();
++    if (!go->Create(GetMap()->GenerateLowGuid<HighGuid::GameObject>(), entry, GetMap(), _instigator->GetPhaseMask(),
++        Position(x, y, z, o), QuaternionData::fromEulerAnglesZYX(x, y, z), 255, GO_STATE_READY))
++    {
++        delete go;
++        return nullptr;
++    }
++
++    go->SetRespawnTime((GetDuration() + uint32(std::abs(TIMER_START_POS))) / 1000 + 1);
++    go->SetSpawnedByDefault(false);
++
++    GetMap()->AddToMap(go);
++    return go;
++}
++
++bool Cutscene::Initialize()
++{
++    if (!CanCreate())
++        return false;
++
++    FillActors();
++    FillActions();
++
++    if (Cancelled())
++    {
++        Cleanup();
++        return false;
++    }
++
++    _map->RegisterCutscene(this);
++
++    _state = CutsceneStates::STATE_INITIALIZED;
++    return true;
++}
++
++void Cutscene::FillActors()
++{
++    if (Cancelled())
++        return;
++
++    auto bounds = sCutsceneMgr->GetCutsceneActorMapBounds(GetId());
++
++    for (auto it = bounds.first; it != bounds.second; ++it)
++    {
++        CutsceneActorData const& cad = it->second;
++        WorldObject* wactor = nullptr;
++
++        if (cad.entryOrGuid == 0)
++        {
++            ASSERT(cad.actorType == uint32(CutsceneActorTypes::ACTOR_TYPE_PLAYER));
++            wactor = _instigator;
++        }
++        else if (cad.entryOrGuid < 0)
++        {
++            switch (CutsceneActorTypes(cad.actorType))
++            {
++                case CutsceneActorTypes::ACTOR_TYPE_CREATURE:
++                    wactor = _summonCreature(-cad.entryOrGuid, cad.x, cad.y, cad.z, cad.o);
++                    break;
++                case CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT:
++                    wactor = _summonGameObject(-cad.entryOrGuid, cad.x, cad.y, cad.z, cad.o);
++                    break;
++                default:
++                    break;
++            }
++        }
++        else //if (cad.entryOrGuid > 0)
++        {
++            switch (CutsceneActorTypes(cad.actorType))
++            {
++                case CutsceneActorTypes::ACTOR_TYPE_CREATURE:
++                {
++                    using MapCit = Map::CreatureBySpawnIdContainer::const_iterator;
++                    using Range = std::pair<MapCit, MapCit>;
++                    Range i = GetMap()->GetCreatureBySpawnIdStore().equal_range(cad.entryOrGuid);
++                    if (i.first != i.second)
++                        wactor = i.first->second;
++                    break;
++                }
++                case CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT:
++                {
++                    using MapCit = Map::GameObjectBySpawnIdContainer::const_iterator;
++                    using Range = std::pair<MapCit, MapCit>;
++                    Range i = GetMap()->GetGameObjectBySpawnIdStore().equal_range(cad.entryOrGuid);
++                    if (i.first != i.second)
++                        wactor = i.first->second;
++                    break;
++                }
++                default:
++                    TC_LOG_ERROR("cutscenes", "Cutscene %u has unsupported actor type %u! Skipped.", GetId(), cad.actorType);
++                    break;
++            }
++        }
++
++        if (!wactor)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::FillActors(): Failed to add actor %u to cutscene %u! Aborted.", cad.actorId, GetId());
++            Cancel();
++            return;
++        }
++
++        switch (CutsceneActorTypes(cad.actorType))
++        {
++            case CutsceneActorTypes::ACTOR_TYPE_CREATURE:
++            case CutsceneActorTypes::ACTOR_TYPE_PLAYER:
++                AddExistingUnitActor(cad.actorId, wactor);
++                break;
++            case CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT:
++                AddExistingGameobjectActor(cad.actorId, wactor);
++                break;
++            default:
++                break;
++        }
++    }
++}
++
++void Cutscene::FillActions()
++{
++    if (Cancelled())
++        return;
++
++    using ActorsById = std::unordered_map<uint32 /*actorId*/, ObjectGuid>;
++    ActorsById actorGuids;
++
++    for (auto acit = _actors.begin(); acit != _actors.end(); ++acit)
++        actorGuids.emplace(acit->second.actorId, acit->first);
++
++    auto bounds = sCutsceneMgr->GetCutsceneActionMapBounds(GetId());
++    for (auto it = bounds.first; it != bounds.second; ++it)
++    {
++        CutsceneActionData const& cad = it->second;
++
++        ActorsById::const_iterator objit = actorGuids.find(cad.actorId);
++        ASSERT(objit != actorGuids.end());
++
++        switch (CutsceneActionTypes(cad.type))
++        {
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1, (uint32)cad.intparam2));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_START:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_ATTACK_START>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP>(
++                    this, objit->second, cad.timeOffset));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_SET_WALK:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_SET_WALK>(
++                    this, objit->second, cad.timeOffset, (bool)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_MOVEMENT:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_MOVEMENT>(
++                    this, objit->second, cad.timeOffset, (float)cad.x, (float)cad.y, (float)cad.z, (float)cad.o, (bool)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_SPELLCAST:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_SPELLCAST>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1, (uint32)cad.intparam2, (uint32)cad.intparam3));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_SET_FLAG:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_SET_FLAG>(
++                    this, objit->second, cad.timeOffset, (uint16)cad.intparam1, (uint32)cad.intparam2));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1, (bool)cad.intparam2));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1, (uint32)cad.intparam2, (bool)cad.intparam3));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG>(
++                    this, objit->second, cad.timeOffset, (uint16)cad.intparam1, (uint32)cad.intparam2));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI>(
++                    this, objit->second, cad.timeOffset, (float)cad.x, (float)cad.y, (float)cad.z));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_SPEAK:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_SPEAK>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1, (uint32)cad.intparam2, (uint8)cad.intparam3));
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR:
++                QueueActions(CutsceneAction::Create<CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR>(
++                    this, objit->second, cad.timeOffset, (uint32)cad.intparam1));
++                break;
++            //NIY
++            case CutsceneActionTypes::ACTION_TYPE_MOUNT:
++            case CutsceneActionTypes::ACTION_TYPE_DISMOUNT:
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_ANIM_KIT:
++            default:
++                break;
++        }
++    }
++}
++
++void Cutscene::Cancel()
++{
++    TC_LOG_DEBUG("cutscenes", "Cutscene::Cancel(): id %u, guid %u", GetId(), GetGuid());
++
++    _timer = std::max<int32>(_timer, GetDuration());
++    while (!_queue.Empty())
++        _queue.Pop();
++}
++
++void Cutscene::Cleanup()
++{
++    TC_LOG_DEBUG("cutscenes", "Cutscene::Cleanup(): id %u, guid %u", GetId(), GetGuid());
++
++    if (!Finished() && !Cancelled())
++        TC_LOG_ERROR("cutscenes", "Cutscene::Cleanup(): id %u, guid %u called while not finished or cancelled! Done", GetId(), GetGuid());
++
++    _removeAllActors();
++}
++
++void Cutscene::_addActor(uint32 actorId, WorldObject* actor)
++{
++    TC_LOG_DEBUG("cutscenes", "Cutscene::_addActor(): id %u, guid %u, aid %u, actor: %s", GetId(), GetGuid(), actorId, actor->GetGUID().ToString().c_str());
++
++    if (HasActor(actorId))
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::_addActor(): id %u, guid %u, aid %u, actor: %s Duplicate actor for aid %u!",
++            GetId(), GetGuid(), actorId, actor->GetGUID().ToString().c_str(), actorId);
++        return;
++    }
++
++    if (HasActor(actor))
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::_addActor(): id %u, guid %u, aid %u, actor: %s Actor already added!",
++            GetId(), GetGuid(), actorId, actor->GetGUID().ToString().c_str());
++        return;
++    }
++
++    if (actor->IsInCutscene())
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::_addActor(): actor is in different scene (id: %u, guid: %u)!!! %s",
++            actor->GetCutscene()->GetId(), actor->GetCutscene()->GetGuid(), actor->GetGUID().ToString().c_str());
++        return;
++    }
++
++    _actors.emplace(actor->GetGUID(), CutsceneObject(actorId, actor));
++    actor->EnterCutscene(this);
++}
++
++void Cutscene::AddExistingUnitActor(uint32 actorId, WorldObject* actor)
++{
++    if (_state >= CutsceneStates::STATE_RUNNING)
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::AddExistingUnitActor(): id %u, guid %u aid %u called while running!", GetId(), GetGuid(), actorId);
++        return;
++    }
++
++    _addActor(actorId, actor);
++}
++
++void Cutscene::AddExistingGameobjectActor(uint32 actorId, WorldObject* actor)
++{
++    if (_state >= CutsceneStates::STATE_RUNNING)
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::AddExistingGameobjectActor(): id %u, aid %u, guid %u called while running!", GetId(), GetGuid());
++        return;
++    }
++
++    _addActor(actorId, actor);
++}
++
++void Cutscene::RemoveActor(ObjectGuid guid, bool erase)
++{
++    TC_LOG_DEBUG("cutscenes", "Cutscene::RemoveActor(): id %u, guid %u, wguid %s, erase = %u",
++        GetId(), GetGuid(), guid.ToString().c_str(), uint32(erase));
++
++    WorldObject* wactor = nullptr;
++    uint32 actorId = 0;
++
++    for (auto ci = _actors.begin(); ci != _actors.end(); ++ci)
++    {
++        if (ci->first != guid)
++            continue;
++
++        wactor = FindActorInMap(_map, guid);
++        actorId = ci->second.actorId;
++
++        if (!wactor)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::RemoveActor(): actor not found! Type: %u, aid %u, %s",
++                uint32(guid.GetTypeId()), actorId, guid.ToString().c_str());
++            return;
++        }
++
++        if (wactor != ci->second.actor)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::RemoveActor(): actor does not match stored actor!!! Type: %u, aid %u, %s",
++                uint32(guid.GetTypeId()), actorId, guid.ToString().c_str());
++            return;
++        }
++
++        if (!wactor->IsInCutscene())
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::RemoveActor(): actor is not in any scene! Type: %u, aid %u, %s",
++                uint32(guid.GetTypeId()), actorId, guid.ToString().c_str());
++            return;
++        }
++
++        if (wactor->GetCutscene() != this)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::RemoveActor(): actor is in different scene (id: %u, guid: %u)!!! Type: %u, aid %u, %s",
++                wactor->GetCutscene()->GetId(), wactor->GetCutscene()->GetGuid(), uint32(guid.GetTypeId()), actorId, guid.ToString().c_str());
++            return;
++        }
++
++        break;
++    }
++
++    if (wactor)
++    {
++        switch (wactor->GetTypeId())
++        {
++            case TYPEID_PLAYER:
++                wactor->ToPlayer()->RemoveAura(52767);
++                wactor->ToPlayer()->SetClientControl(wactor->ToUnit(), true);
++                wactor->ToPlayer()->UpdateObjectVisibility(false);
++                [[fallthrough]];
++            case TYPEID_UNIT:
++                wactor->ToUnit()->RemoveUnitFlag(UNIT_FLAG_CUTSCENE);
++                wactor->ToUnit()->RemoveUnitFlag2(UNIT_FLAG2_CUTSCENE);
++                break;
++            case TYPEID_GAMEOBJECT:
++                break;
++            default:
++                TC_LOG_ERROR("cutscenes", "Cutscene::RemoveActor(): not supported actor type %u!", uint32(guid.GetTypeId()));
++                break;
++        }
++
++        wactor->ResetCutscene();
++        if (erase)
++            _actors.erase(guid);
++
++        if (wactor->GetTypeId() == TYPEID_PLAYER && wactor->ToPlayer() == _instigator && !Finished() && !Cancelled())
++        {
++            TC_LOG_DEBUG("cutscenes", "Cutscene::RemoveActor(): removed instigator, canceling (id: %u, guid: %u)!", GetId(), GetGuid());
++            Cancel();
++        }
++
++        if (wactor->GetTypeId() == TYPEID_UNIT/* && wactor->ToCreature()->GetSpawnId() != 0*/ && wactor->FindMap())
++        {
++            if (wactor->ToCreature()->GetSpawnId() != 0)
++                wactor->ToCreature()->SetRespawnDelay(2);
++            wactor->ToCreature()->DisappearAndDie();
++        }
++    }
++}
++
++void Cutscene::_removeAllActors(bool erase)
++{
++    TC_LOG_DEBUG("cutscenes", "Cutscene::_removeAllActors(): id %u, guid %u, erase = %u", GetId(), GetGuid(), uint32(erase));
++
++    for (auto const& ci : _actors)
++        RemoveActor(ci.first, false);
++
++    if (erase)
++        _actors.clear();
++}
++
++bool Cutscene::HasActor(WorldObject const* actor) const
++{
++    for (auto const& obj : _actors)
++        if (obj.second.actor == actor)
++            return true;
++    return false;
++}
++
++bool Cutscene::HasActor(ObjectGuid guid) const
++{
++    decltype(_actors)::const_iterator ci = _actors.find(guid);
++    return ci != _actors.end();
++}
++
++bool Cutscene::HasActor(uint32 actorId) const
++{
++    for (auto const& obj : _actors)
++        if (obj.second.actorId == actorId)
++            return true;
++    return false;
++}
++
++WorldObject* Cutscene::GetActor(ObjectGuid guid) const
++{
++    decltype(_actors)::const_iterator ci = _actors.find(guid);
++    return ci == _actors.end() ? nullptr : FindActorInMap(GetMap(), ci->first);
++}
++
++WorldObject* Cutscene::GetActor(uint32 actorId) const
++{
++    for (auto const& obj : _actors)
++        if (obj.second.actorId == actorId)
++            return FindActorInMap(GetMap(), obj.first);
++    return nullptr;
++}
++
++uint32 Cutscene::GetActorId(ObjectGuid guid) const
++{
++    decltype(_actors)::const_iterator ci = _actors.find(guid);
++    return ci == _actors.end() ? 0 : ci->second.actorId;
++}
++
++WorldObject* Cutscene::FindActorInMap(Map* map, ObjectGuid guid)
++{
++    WorldObject* wactor;
++    switch (guid.GetTypeId())
++    {
++        case TYPEID_PLAYER:
++            wactor = map->GetPlayer(guid);
++            break;
++        case TYPEID_UNIT:
++            wactor = map->GetCreature(guid);
++            break;
++        case TYPEID_GAMEOBJECT:
++            wactor = map->GetGameObject(guid);
++            break;
++        default:
++            TC_LOG_ERROR("cutscenes", "Cutscene::FindActorInMap(): not supported actor type %u!", uint32(guid.GetTypeId()));
++            wactor = nullptr;
++            break;
++    }
++
++    return wactor;
++}
++
++void Cutscene::Update(uint32 diff)
++{
++    if (_state != CutsceneStates::STATE_RUNNING)
++        return;
++
++    _timer += diff;
++
++    if (_timer <= 0)
++        return;
++
++    if (Finished())
++    {
++        TC_LOG_DEBUG("cutscenes", "Cutscene::Update(): Finished, id %u, guid %u, timer %d", GetId(), GetGuid(), _timer);
++        _state = CutsceneStates::STATE_FINISHED;
++        Cleanup();
++
++        _map->AddCutsceneToRemoveList(this);
++        return;
++    }
++
++    //No actions remains, scene is about to end, do nothing
++    if (_queue.Empty())
++        return;
++
++    //Actions here
++    do
++    {
++        CutsceneAction action = _queue.Next();
++        if (int32(action.GetTimeOffset()) > _timer)
++            break;
++
++        _queue.Pop();
++
++        action.Perform();
++
++    } while (!_queue.Empty());
++}
++
++void Cutscene::Run()
++{
++    using namespace enumclass_operations;
++
++    TC_LOG_DEBUG("cutscenes", "Cutscene::Run(): id %u, guid %u", GetId(), GetGuid());
++
++    if (_state != CutsceneStates::STATE_INITIALIZED)
++    {
++        TC_LOG_ERROR("cutscenes", "Cutscene::Run(): not initialized!");
++        Cleanup();
++        return;
++    }
++
++    using ActorDataByActorId = std::map<uint32 /*actorId*/, CutsceneActorData const*>;
++    ActorDataByActorId actorDatas;
++
++    auto bounds = sCutsceneMgr->GetCutsceneActorMapBounds(GetId());
++    for (auto it = bounds.first; it != bounds.second; ++it)
++        actorDatas.insert(ActorDataByActorId::value_type(it->second.actorId, &it->second));
++
++    for (auto ci = _actors.begin(); ci != _actors.end(); ++ci)
++    {
++        ObjectGuid guid = ci->first;
++        WorldObject* wactor = FindActorInMap(_map, guid);
++
++        if (!wactor)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::Run(): actor not found! Type: %u, %s",
++                uint32(guid.GetTypeId()), guid.ToString().c_str());
++            continue;
++        }
++
++        if (wactor != ci->second.actor)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::Run(): actor does not match stored actor!!! Type: %u, %s",
++                uint32(guid.GetTypeId()), guid.ToString().c_str());
++            continue;
++        }
++
++        if (!wactor->IsInCutscene())
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::Run(): actor is not in any scene! Type: %u, %s",
++                uint32(guid.GetTypeId()), guid.ToString().c_str());
++            continue;
++        }
++
++        if (wactor->GetCutscene() != this)
++        {
++            TC_LOG_ERROR("cutscenes", "Cutscene::Run(): actor is in different scene (id: %u, guid: %u)!!! Type: %u, %s",
++                wactor->GetCutscene()->GetId(), wactor->GetCutscene()->GetGuid(), uint32(guid.GetTypeId()), guid.ToString().c_str());
++            continue;
++        }
++
++        auto cadit = actorDatas.find(ci->second.actorId);
++        ASSERT(cadit != actorDatas.end());
++        CutsceneActorData const* actorData = cadit->second;
++
++        if (wactor->GetTypeId() == TYPEID_UNIT)
++            wactor->ToUnit()->ReplaceAllNpcFlags(UNIT_NPC_FLAG_NONE);
++
++        switch (wactor->GetTypeId())
++        {
++            case TYPEID_PLAYER:
++#if defined(MOD_PRESENT_NPCBOTS) && MOD_PRESENT_NPCBOTS == 1
++                //if (wactor->ToPlayer()->HaveBot())
++                //    wactor->ToPlayer()->GetBotMgr()->SetBotsHidden(true);
++#endif
++                wactor->CastSpell(wactor, 52767, true);
++                if (Aura* aura = wactor->ToUnit()->GetAura(52767))
++                {
++                    aura->SetDuration(int32(GetDuration() + uint32(std::abs(TIMER_START_POS))));
++                    aura->SetMaxDuration(int32(GetDuration() + uint32(std::abs(TIMER_START_POS))));
++                }
++                wactor->ToPlayer()->SetClientControl(wactor->ToUnit(), false);
++                wactor->UpdateObjectVisibility(false);
++                [[fallthrough]];
++            case TYPEID_UNIT:
++                wactor->ToUnit()->SetUnitFlag(UNIT_FLAG_CUTSCENE);
++                wactor->ToUnit()->SetUnitFlag2(UNIT_FLAG2_CUTSCENE);
++                if (!(actorData->flags & CutsceneActorFlags::CUTSCENE_ACTOR_FLAG_NO_INITIAL_POS))
++                {
++                    Position pos(actorData->x, actorData->y, actorData->z, actorData->o);
++                    wactor->ToUnit()->GetMotionMaster()->MovePoint(0, pos, true, pos.GetOrientation());
++                    if (wactor->GetExactDist(pos) > 15.f)
++                        TC_LOG_WARN("cutscenes", "Cutscene::Run(): actor %u (%s) is %.1f yds away from starting postition!",
++                            ci->second.actorId, wactor->GetName().c_str(), wactor->GetExactDist(pos));
++                }
++                break;
++            case TYPEID_GAMEOBJECT:
++                break;
++            default:
++                TC_LOG_ERROR("cutscenes", "Cutscene::Run(): not supported actor type %u!", uint32(guid.GetTypeId()));
++                break;
++        }
++    }
++
++    _state = CutsceneStates::STATE_RUNNING;
++}
++
++uint32 Cutscene::GetDuration() const
++{
++    return _cutsceneData->duration;
++}
++
++CutsceneData const* Cutscene::GetData() const
++{
++    return _cutsceneData;
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
+diff --git a/src/server/game/Cutscenes/Cutscene.h b/src/server/game/Cutscenes/Cutscene.h
+new file mode 100644
+index 00000000..3ef9f0af
+--- /dev/null
++++ b/src/server/game/Cutscenes/Cutscene.h
+@@ -0,0 +1,160 @@
++/*
++ * Cutscene
++ */
++
++#ifndef CUTSCENE_H_
++#define CUTSCENE_H_
++
++#include "CutsceneAction.h"
++#include "ObjectGuid.h"
++#include "UnitDefines.h"
++
++#include <unordered_map>
++
++class Creature;
++class GameObject;
++class Map;
++class Player;
++class WorldObject;
++struct CutsceneData;
++struct Position;
++
++constexpr UnitFlags UNIT_FLAG_CUTSCENE = UNIT_FLAG_NON_ATTACKABLE_2;
++constexpr UnitFlags2 UNIT_FLAG2_CUTSCENE = UNIT_FLAG2_UNUSED_10;
++
++//3 sec to 5 min
++constexpr uint32 CUTSCENE_MIN_DURATION = 3000u;
++constexpr uint32 CUTSCENE_MAX_DURATION = 300000u;
++
++struct CutsceneActionQueue
++{
++    template<class A, class...As>
++    void AddActions(A&& action, As&&... actions)
++    {
++        queue.push(std::forward<A>(action));
++
++        if constexpr (sizeof...(As) > 0)
++            AddActions(std::forward<As>(actions)...);
++    }
++
++    CutsceneAction const& Next() const
++    {
++        ASSERT(!Empty());
++        return queue.top();
++    }
++
++    bool Empty() const { return queue.empty(); }
++
++    inline void Pop() { queue.pop(); }
++
++protected:
++    std::priority_queue<CutsceneAction> queue;
++};
++
++enum class CutsceneStates : uint8
++{
++    STATE_NEW                   = 0,
++    STATE_INITIALIZED           = 1,
++    STATE_RUNNING               = 2,
++    STATE_FINISHED              = 3
++};
++
++enum class CutsceneActorFlags : uint32
++{
++    CUTSCENE_ACTOR_FLAG_NO_INITIAL_POS          = 0x00000001,
++};
++
++struct CutsceneObject
++{
++    explicit CutsceneObject(uint32 actorId, WorldObject* actor) : actorId(actorId), actor(actor) {}
++    CutsceneObject(CutsceneObject&&) noexcept = default;
++    CutsceneObject& operator=(CutsceneObject&&) noexcept = default;
++
++    const uint32 actorId;
++    WorldObject* const actor;
++    //void* data;
++
++public:
++    CutsceneObject(CutsceneObject const&) = delete;
++    CutsceneObject& operator=(CutsceneObject const&) = delete;
++};
++
++class Cutscene
++{
++public:
++    explicit Cutscene(Player* instigator, uint32 id);
++    bool CanCreate() const;
++
++    bool Initialize();
++    void FillActors();
++    void FillActions();
++    void Cancel();
++    void Cleanup();
++
++    void AddExistingUnitActor(uint32 actorId, WorldObject* actor);
++    void AddExistingGameobjectActor(uint32 actorId, WorldObject* actor);
++    void RemoveActor(ObjectGuid, bool erase = true);
++    bool HasActor(WorldObject const* actor) const;
++    bool HasActor(ObjectGuid guid) const;
++    bool HasActor(uint32 actorId) const;
++    WorldObject* GetActor(ObjectGuid guid) const;
++    WorldObject* GetActor(uint32 actorId) const;
++    uint32 GetActorId(ObjectGuid guid) const;
++
++    static WorldObject* FindActorInMap(Map* map, ObjectGuid guid);
++
++    template<class...As>
++    void QueueActions(As&&... actions) { _queue.AddActions(std::forward<As>(actions)...); }
++
++    //uint32 ActorsCount() const { return _actors.size(); }
++    bool Finished() const { return _timer >= int32(GetDuration()) && _queue.Empty(); }
++    bool Cancelled() const { return _state == CutsceneStates::STATE_NEW && Finished(); }
++
++    Map* GetMap() const { return _map; }
++    uint32 GetId() const { return _id; }
++    uint32 GetGuid() const { return _guid; }
++    uint32 GetDuration() const;
++    CutsceneData const* GetData() const;
++
++    void Run();
++
++    void Update(uint32 diff);
++
++private:
++    Creature* _summonCreature(uint32 entry, float x, float y, float z, float o);
++    GameObject* _summonGameObject(uint32 entry, float x, float y, float z, float o);
++
++    void _addActor(uint32 actorId, WorldObject* actor);
++    void _removeAllActors(bool erase = true);
++
++    Player* const _instigator;
++
++    Map* const _map;
++    uint32 const _id;
++    uint32 const _guid;
++
++    CutsceneData const* _cutsceneData;
++
++    int32 _timer;
++    CutsceneStates _state;
++    std::unordered_map<ObjectGuid, CutsceneObject> _actors;
++    CutsceneActionQueue _queue;
++
++public:
++    Cutscene& operator=(Cutscene const&) = delete;
++    Cutscene& operator=(Cutscene&&) = delete;
++};
++
++namespace enumclass_operations
++{
++inline constexpr auto operator&(const CutsceneActorFlags f, const uint32 u) noexcept
++{
++    return static_cast<std::underlying_type<CutsceneActorFlags>::type>(f) & u;
++}
++inline constexpr auto operator&(const uint32 u, const CutsceneActorFlags f) noexcept
++{
++    return f & u;
++}
++}
++
++#endif //CUTSCENE_H_
+diff --git a/src/server/game/Cutscenes/CutsceneAction.cpp b/src/server/game/Cutscenes/CutsceneAction.cpp
+new file mode 100644
+index 00000000..77c84b2e
+--- /dev/null
++++ b/src/server/game/Cutscenes/CutsceneAction.cpp
+@@ -0,0 +1,261 @@
++/*
++ * CutsceneAction
++ */
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "Cutscene.h"
++#include "CutsceneAction.h"
++#include "GenericMovementGenerator.h"
++#include "MotionMaster.h"
++#include "MoveSplineInit.h"
++#include "Player.h"
++#include "SpellMgr.h"
++#include "Unit.h"
++
++void CutsceneAction::Perform()
++{
++    WorldObject* actor = _scene->GetActor(_actorGuid);
++    std::string name = actor ? actor->GetName() : "Unknown";
++    TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): at %u type %u, actor %u (%s)",
++        _timeOffset, _type, _scene->GetActorId(_actorGuid), name.c_str());
++
++    if (!actor)
++    {
++        TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): at %u type %u, actor not found! actor %s",
++            _timeOffset, _type, _actorGuid.ToString().c_str());
++        return;
++    }
++
++    switch (_type)
++    {
++        case CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_ATTACK_ONCE, par1 %u par2 %u",
++                _actionParams.attackOnceParams.targetActorId, _actionParams.attackOnceParams.attackType);
++            if (WorldObject* target = _scene->GetActor(_actionParams.attackOnceParams.targetActorId))
++            {
++                if (actor->GetTypeId() == TYPEID_UNIT && !actor->ToUnit()->HasUnitFlag(UNIT_FLAG_POSSESSED) && !actor->ToUnit()->HasUnitFlag2(UNIT_FLAG2_CANNOT_TURN))
++                    actor->ToUnit()->SetFacingToObject(target, false); // update client side facing to face the target (prevents visual glitches when casting untargeted spells)
++                CalcDamageInfo damageInfo;
++                actor->ToUnit()->CalculateMeleeDamage(target->ToUnit(), &damageInfo, WeaponAttackType(_actionParams.attackOnceParams.attackType));
++                for (uint8 i = 0; i < MAX_ITEM_PROTO_DAMAGES; ++i)
++                    Unit::DealDamageMods(target->ToUnit(), damageInfo.Damages[i].Damage, &damageInfo.Damages[i].Absorb);
++                actor->ToUnit()->SendAttackStateUpdate(&damageInfo);
++                actor->ToUnit()->DealMeleeDamage(&damageInfo, false);
++                DamageInfo dmgInfo(damageInfo);
++                Unit::ProcSkillsAndAuras(damageInfo.Attacker, damageInfo.Target, damageInfo.ProcAttacker, damageInfo.ProcVictim, PROC_SPELL_TYPE_NONE, PROC_SPELL_PHASE_NONE, dmgInfo.GetHitMask(), nullptr, &dmgInfo, nullptr);
++            }
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_ATTACK_ONCE, target actor %d not found! actor %s",
++                    _actionParams.attackOnceParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_ATTACK_START:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_ATTACK_START, par1 %u", _actionParams.attackStartParams.targetActorId);
++            if (WorldObject* target = _scene->GetActor(_actionParams.attackStartParams.targetActorId))
++            {
++                actor->ToUnit()->SetFacingToObject(target);
++                actor->ToUnit()->SendMeleeAttackStart(target->ToUnit());
++                switch (actor->GetTypeId())
++                {
++                    case TYPEID_PLAYER:
++                        actor->ToPlayer()->SetSelection(target->GetGUID());
++                        break;
++                    case TYPEID_UNIT:
++                        actor->ToCreature()->SetTarget(target->GetGUID());
++                        break;
++                    default:
++                        break;
++                }
++            }
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_ATTACK_START, target actor %d not found! actor %s",
++                    _actionParams.attackStartParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_ATTACK_STOP");
++            actor->ToUnit()->SendMeleeAttackStop();
++            switch (actor->GetTypeId())
++            {
++                case TYPEID_PLAYER:
++                    actor->ToPlayer()->SetSelection(ObjectGuid::Empty);
++                    break;
++                case TYPEID_UNIT:
++                    actor->ToCreature()->SetTarget(ObjectGuid::Empty);
++                    break;
++                default:
++                    break;
++            }
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_SET_WALK:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SET_WALK on = %u", _actionParams.setWalkParams.on);
++            if (_actionParams.setWalkParams.on)
++                actor->ToUnit()->AddUnitMovementFlag(MOVEMENTFLAG_WALKING);
++            else
++                actor->ToUnit()->RemoveUnitMovementFlag(MOVEMENTFLAG_WALKING);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_MOVEMENT:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_MOVEMENT backwards %u, x %.3f y %.3f z %.3f o %.2f",
++                _actionParams.movementParams.backwards, _actionParams.movementParams.x, _actionParams.movementParams.y, _actionParams.movementParams.z, _actionParams.movementParams.o);
++            if (actor->GetExactDist(_actionParams.movementParams.x, _actionParams.movementParams.y, _actionParams.movementParams.z) > 15.f)
++                TC_LOG_WARN("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_MOVEMENT distance is greater than 20 yds!");
++            if (_actionParams.movementParams.backwards)
++            {
++                actor->ToUnit()->SetFacingTo(actor->GetAbsoluteAngle(_actionParams.movementParams.x, _actionParams.movementParams.y) + M_PI);
++
++                std::function<void(Movement::MoveSplineInit&)> initializer = [=, target = actor->ToUnit()->GetGUID()](Movement::MoveSplineInit& init)
++                {
++                    init.MoveTo(_actionParams.movementParams.x,_actionParams.movementParams.y, _actionParams.movementParams.z, false);
++                    init.SetBackward();
++                    init.SetWalk(true);
++                    //init.SetOrientationFixed(true);
++                };
++
++                actor->ToUnit()->GetMotionMaster()->Add(new GenericMovementGenerator(std::move(initializer), EFFECT_MOTION_TYPE, 0));
++            }
++            else
++                actor->ToUnit()->GetMotionMaster()->MovePoint(0, _actionParams.movementParams.x, _actionParams.movementParams.y, _actionParams.movementParams.z, true, _actionParams.movementParams.o);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_SPELLCAST:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPELLCAST, par1 %u par2 %u par3 %u",
++                _actionParams.spellcastParams.targetActorId, _actionParams.spellcastParams.spellId, _actionParams.spellcastParams.castFlags);
++            if (WorldObject* target = _scene->GetActor(_actionParams.spellcastParams.targetActorId))
++            {
++                if (actor->ToUnit() && actor->ToUnit()->IsNonMeleeSpellCast(false))
++                {
++                    TC_LOG_WARN("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPELLCAST, have to interrupt current spell!");
++                    actor->ToUnit()->InterruptNonMeleeSpells(false);
++                }
++                SpellCastResult result = actor->CastSpell(
++                    target, _actionParams.spellcastParams.spellId, TriggerCastFlags(_actionParams.spellcastParams.castFlags));
++                if (result != SPELL_CAST_OK)
++                    TC_LOG_WARN("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPELLCAST spellcast failed!");
++            }
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPELLCAST, target actor %d not found! actor %s",
++                    _actionParams.spellcastParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_SET_FLAG:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SET_FLAG, par1 %u par2 %u",
++                _actionParams.setFlag.field, _actionParams.setFlag.flags);
++            //field integrity is checked in CutsceneMgr
++            actor->SetFlag(_actionParams.setFlag.field, _actionParams.setFlag.flags);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_PLAY_EMOTE, par1 %u", _actionParams.playEmoteParams.emote);
++            actor->ToUnit()->HandleEmoteCommand(Emote(_actionParams.playEmoteParams.emote));
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_PLAY_TEXTEMOTE, par1 %u", _actionParams.playTextEmoteParams.textemote);
++            switch (actor->GetTypeId())
++            {
++                case TYPEID_PLAYER:
++                    actor->ToPlayer()->TextEmote(_actionParams.playTextEmoteParams.textemote);
++                    break;
++                default:
++                    actor->ToUnit()->Unit::TextEmote(_actionParams.playTextEmoteParams.textemote);
++                    break;
++            }
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_FACE_ACTOR, par1 %u", _actionParams.faceActorParams.targetActorId);
++            if (WorldObject* target = _scene->GetActor(_actionParams.faceActorParams.targetActorId))
++                actor->ToUnit()->SetFacingToObject(target);
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_FACE_ACTOR, target actor %d not found! actor %s",
++                    _actionParams.faceActorParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_QUESTCREDIT_EXPLORE, par1 %u par2 %u",
++                _actionParams.questcreditExplore.questId, _actionParams.questcreditExplore.group);
++            if (_actionParams.questcreditExplore.group)
++                actor->ToPlayer()->GroupEventHappens(_actionParams.questcreditExplore.questId, actor);
++            else
++                actor->ToPlayer()->AreaExploredOrEventHappens(_actionParams.questcreditExplore.questId);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_QUESTCREDIT_KILL, par1 %u par2 %u par3 %u",
++                _actionParams.questcreditKill.questId, _actionParams.questcreditKill.creatureId, _actionParams.questcreditKill.group);
++            if (_actionParams.questcreditKill.group)
++                actor->ToPlayer()->RewardPlayerAndGroupAtEvent(_actionParams.questcreditKill.creatureId, actor);
++            else
++                actor->ToPlayer()->KilledMonsterCredit(_actionParams.questcreditKill.creatureId);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_REMOVE_FLAG, par1 %u par2 %u",
++                _actionParams.removeFlag.field, _actionParams.removeFlag.flags);
++            //field integrity is checked in CutsceneMgr
++            actor->RemoveFlag(_actionParams.removeFlag.field, _actionParams.removeFlag.flags);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_MOVEMENT_NO_ORI x %.3f y %.3f z %.3f",
++                _actionParams.movementNoOriParams.x, _actionParams.movementNoOriParams.y, _actionParams.movementNoOriParams.z);
++            if (actor->GetExactDist(_actionParams.movementNoOriParams.x, _actionParams.movementNoOriParams.y, _actionParams.movementNoOriParams.z) > 15.f)
++                TC_LOG_WARN("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_MOVEMENT_NO_ORI distance is greater than 20 yds!");
++            actor->ToUnit()->GetMotionMaster()->MovePoint(0, _actionParams.movementNoOriParams.x, _actionParams.movementNoOriParams.y, _actionParams.movementNoOriParams.z, true);
++            break;
++        case CutsceneActionTypes::ACTION_TYPE_SPEAK:
++        {
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPEAK, par1 %u par2 %u par3 %u",
++                _actionParams.speakParams.targetActorId, _actionParams.speakParams.broadcastTextId, (uint32)_actionParams.speakParams.speechType);
++            WorldObject* target = _actionParams.speakParams.targetActorId ? _scene->GetActor(_actionParams.speakParams.targetActorId) : nullptr;
++            if (!_actionParams.speakParams.targetActorId || target)
++            {
++                switch (CutsceneSpeechTypes(_actionParams.speakParams.speechType))
++                {
++                    case CutsceneSpeechTypes::SPEECH_TYPE_WHISPER:
++                        ASSERT(target && target->GetTypeId() == TYPEID_PLAYER);
++                        actor->ToUnit()->Whisper(_actionParams.speakParams.broadcastTextId, target->ToPlayer());
++                        break;
++                    case CutsceneSpeechTypes::SPEECH_TYPE_YELL:
++                        actor->ToUnit()->Yell(_actionParams.speakParams.broadcastTextId, target);
++                        break;
++                    default:
++                        actor->ToUnit()->Say(_actionParams.speakParams.broadcastTextId, target);
++                        break;
++                }
++            }
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_SPEAK, target actor %d not found! actor %s",
++                    _actionParams.speakParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        }
++        case CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR:
++            TC_LOG_DEBUG("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_TARGET_ACTOR, par1 %u",
++                _actionParams.targetActorParams.targetActorId);
++            if (WorldObject* target = _scene->GetActor(_actionParams.targetActorParams.targetActorId))
++            {
++                switch (actor->GetTypeId())
++                {
++                    //case TYPEID_PLAYER:
++                    //    actor->ToPlayer()->SetSelection(target->GetGUID());
++                    //    break;
++                    case TYPEID_UNIT:
++                        actor->ToCreature()->SetTarget(target->GetGUID());
++                        break;
++                    default:
++                        break;
++                }
++            }
++            else
++                TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): ACTION_TYPE_TARGET_ACTOR, target actor %d not found! actor %s",
++                    _actionParams.targetActorParams.targetActorId, _actorGuid.ToString().c_str());
++            break;
++        //NIY
++        case CutsceneActionTypes::ACTION_TYPE_MOUNT:
++        case CutsceneActionTypes::ACTION_TYPE_DISMOUNT:
++        case CutsceneActionTypes::ACTION_TYPE_PLAY_ANIM_KIT:
++            TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): NYI action type %u!", _type);
++            break;
++        default:
++            TC_LOG_ERROR("cutscenes", "CutsceneAction::Perform(): unsupported action type %u!", _type);
++            break;
++    }
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
+diff --git a/src/server/game/Cutscenes/CutsceneAction.h b/src/server/game/Cutscenes/CutsceneAction.h
+new file mode 100644
+index 00000000..355c5195
+--- /dev/null
++++ b/src/server/game/Cutscenes/CutsceneAction.h
+@@ -0,0 +1,307 @@
++/*
++ * CutsceneAction
++ */
++
++#ifndef CUTSCENE_ACTION_H_
++#define CUTSCENE_ACTION_H_
++
++#include "Common.h"
++#include "Log.h"
++
++class Cutscene;
++class Map;
++
++enum class CutsceneActorTypes : uint32
++{
++    ACTOR_TYPE_NONE                 = 0,
++    ACTOR_TYPE_PLAYER               = 1,
++    ACTOR_TYPE_CREATURE             = 2,
++    ACTOR_TYPE_GAMEOBJECT           = 3,
++
++    ACTOR_TYPE_END
++};
++
++enum class CutsceneActionTypes : uint32
++{
++    ACTION_TYPE_NONE                = 0,
++    ACTION_TYPE_MOUNT               = 1, //NIY
++    ACTION_TYPE_DISMOUNT            = 2, //NIY
++    ACTION_TYPE_ATTACK_ONCE         = 3, //uint32 targetActorId, uint32 attackType
++    ACTION_TYPE_ATTACK_START        = 4, //uint32 targetActorId
++    ACTION_TYPE_ATTACK_STOP         = 5, //<none>
++    ACTION_TYPE_SET_WALK            = 6, //bool on
++    ACTION_TYPE_MOVEMENT            = 7, //float x,y,z,o, bool backwards
++    ACTION_TYPE_SPELLCAST           = 8, //uint32 targetActorId, uint32 spellId, uint32 castFlags
++    ACTION_TYPE_SET_FLAG            = 9, //uint16 field, uint32 flags
++    ACTION_TYPE_PLAY_ANIM_KIT       = 10, //NIY
++    ACTION_TYPE_PLAY_EMOTE          = 11, //uint32 emote
++    ACTION_TYPE_PLAY_TEXTEMOTE      = 12, //uint32 textemote
++    ACTION_TYPE_FACE_ACTOR          = 13, //uint32 targetActorId
++    ACTION_TYPE_QUESTCREDIT_EXPLORE = 14, //uint32 questId, bool group
++    ACTION_TYPE_QUESTCREDIT_KILL    = 15, //uint32 questId, uint32 creatureId, bool group
++    ACTION_TYPE_REMOVE_FLAG         = 16, //uint16 field, uint32 flags
++    ACTION_TYPE_MOVEMENT_NO_ORI     = 17, //float x,y,z
++    ACTION_TYPE_SPEAK               = 18, //uint32 targetActorId, uint32 broadcastTextId, uint8 speechType
++    ACTION_TYPE_TARGET_ACTOR        = 19, //uint32 targetActorId
++
++    ACTION_TYPE_END
++};
++
++enum class CutsceneSpeechTypes : uint8
++{
++    SPEECH_TYPE_TALK                = 1,
++    SPEECH_TYPE_YELL                = 2,
++    SPEECH_TYPE_WHISPER             = 3,
++
++    SPEECH_TYPE_END
++};
++
++class CutsceneAction
++{
++public:
++    template<CutsceneActionTypes type, class...Ps>
++    static CutsceneAction Create(Cutscene const* scene, ObjectGuid actorGuid, uint32 timeOffset, Ps&&... params)
++    {
++        CutsceneAction action(scene, type, timeOffset, actorGuid);
++        action.Configure<type>(std::forward<Ps>(params)...);
++        return action;
++    }
++
++    void Perform();
++
++    //Cutscene const* GetScene() const { return _scene; }
++    //CutsceneActionTypes GetType() const { return _type; }
++    //ObjectGuid GetActorGuid() const noexcept { return _actorGuid; }
++    uint32 GetTimeOffset() const noexcept { return _timeOffset; }
++    //auto GetParams() const { return _actionParams; }
++
++    bool operator<(CutsceneAction const& other) const noexcept
++    {
++        return this->GetTimeOffset() > other.GetTimeOffset();
++    }
++
++private:
++    union
++    {
++        struct
++        {
++            enum { argsnum = 2, mytype = CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE };
++            uint32 targetActorId;
++            uint32 attackType;
++        } attackOnceParams;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_ATTACK_START };
++            uint32 targetActorId;
++        } attackStartParams;
++
++        struct
++        {
++            enum { argsnum = 0, mytype = CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP };
++        } attackStopParams;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_SET_WALK };
++            bool on;
++        } setWalkParams;
++
++        struct
++        {
++            enum { argsnum = 5, mytype = CutsceneActionTypes::ACTION_TYPE_MOVEMENT };
++            float x;
++            float y;
++            float z;
++            float o;
++            bool backwards;
++        } movementParams;
++
++        struct
++        {
++            enum { argsnum = 3, mytype = CutsceneActionTypes::ACTION_TYPE_SPELLCAST };
++            uint32 targetActorId;
++            uint32 spellId;
++            uint32 castFlags;
++        } spellcastParams;
++
++        struct
++        {
++            enum { argsnum = 2, mytype = CutsceneActionTypes::ACTION_TYPE_SET_FLAG };
++            uint16 field;
++            uint32 flags;
++        } setFlag;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE };
++            uint32 emote;
++        } playEmoteParams;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE };
++            uint32 textemote;
++        } playTextEmoteParams;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR };
++            uint32 targetActorId;
++        } faceActorParams;
++
++        struct
++        {
++            enum { argsnum = 2, mytype = CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE };
++            uint32 questId;
++            bool group;
++        } questcreditExplore;
++
++        struct
++        {
++            enum { argsnum = 3, mytype = CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL };
++            uint32 questId;
++            uint32 creatureId;
++            bool group;
++        } questcreditKill;
++
++        struct
++        {
++            enum { argsnum = 2, mytype = CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG };
++            uint16 field;
++            uint32 flags;
++        } removeFlag;
++
++        struct
++        {
++            enum { argsnum = 3, mytype = CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI };
++            float x;
++            float y;
++            float z;
++        } movementNoOriParams;
++
++        struct
++        {
++            enum { argsnum = 3, mytype = CutsceneActionTypes::ACTION_TYPE_SPEAK };
++            uint32 targetActorId;
++            uint32 broadcastTextId;
++            uint8 speechType;
++        } speakParams;
++
++        struct
++        {
++            enum { argsnum = 1, mytype = CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR };
++            uint32 targetActorId;
++        } targetActorParams;
++
++        enum { RAW_SIZE = sizeof(movementParams) };
++
++        char raw[RAW_SIZE];
++
++    } _actionParams;
++
++    explicit CutsceneAction(Cutscene const* scene, CutsceneActionTypes type, uint32 timeOffset, ObjectGuid actorGuid) :
++        _scene(scene), _type(type), _timeOffset(timeOffset), _actorGuid(actorGuid)
++    {
++        memset(_actionParams.raw, 0, sizeof(_actionParams.raw));
++    }
++
++    template<CutsceneActionTypes type, class...Ps>
++    void Configure(Ps&&... params)
++    {
++#define ASSERT_INIT_PARAMS(p,t)                                                                             \
++        do {                                                                                                \
++            static_assert(sizeof...(Ps) >= p.argsnum, "Not enough arguments for cutscene action type " #t); \
++            static_assert(sizeof...(Ps) <= p.argsnum, "Too many arguments for cutscene action type " #t);   \
++            p = { std::forward<Ps>(params)... };                                                            \
++        } while (0)
++
++        if constexpr (type == CutsceneActionTypes::ACTION_TYPE_MOUNT)
++            static_assert(false, "NIY Cutscene action type ACTION_TYPE_MOUNT");
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_DISMOUNT)
++            static_assert(false, "NIY Cutscene action type ACTION_TYPE_DISMOUNT");
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE)
++            ASSERT_INIT_PARAMS(_actionParams.attackOnceParams, ACTION_TYPE_ATTACK_ONCE);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_ATTACK_START)
++            ASSERT_INIT_PARAMS(_actionParams.attackStartParams, ACTION_TYPE_ATTACK_START);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP)
++            ASSERT_INIT_PARAMS(_actionParams.attackStopParams, ACTION_TYPE_ATTACK_STOP);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_SET_WALK)
++            ASSERT_INIT_PARAMS(_actionParams.setWalkParams, ACTION_TYPE_SET_WALK);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_MOVEMENT)
++            ASSERT_INIT_PARAMS(_actionParams.movementParams, ACTION_TYPE_MOVEMENT);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_SPELLCAST)
++            ASSERT_INIT_PARAMS(_actionParams.spellcastParams, ACTION_TYPE_SPELLCAST);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_SET_FLAG)
++            ASSERT_INIT_PARAMS(_actionParams.setFlag, ACTION_TYPE_SET_FLAG);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_PLAY_ANIM_KIT)
++            static_assert(false, "NIY Cutscene action type ACTION_TYPE_PLAY_ANIM_KIT");
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE)
++            ASSERT_INIT_PARAMS(_actionParams.playEmoteParams, ACTION_TYPE_PLAY_EMOTE);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE)
++            ASSERT_INIT_PARAMS(_actionParams.playTextEmoteParams, ACTION_TYPE_PLAY_TEXTEMOTE);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR)
++            ASSERT_INIT_PARAMS(_actionParams.faceActorParams, ACTION_TYPE_FACE_ACTOR);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE)
++            ASSERT_INIT_PARAMS(_actionParams.questcreditExplore, ACTION_TYPE_QUESTCREDIT_EXPLORE);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL)
++            ASSERT_INIT_PARAMS(_actionParams.questcreditKill, ACTION_TYPE_QUESTCREDIT_KILL);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG)
++            ASSERT_INIT_PARAMS(_actionParams.removeFlag, ACTION_TYPE_REMOVE_FLAG);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI)
++            ASSERT_INIT_PARAMS(_actionParams.movementNoOriParams, ACTION_TYPE_MOVEMENT_NO_ORI);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_SPEAK)
++            ASSERT_INIT_PARAMS(_actionParams.speakParams, ACTION_TYPE_SPEAK);
++        else if constexpr (type == CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR)
++            ASSERT_INIT_PARAMS(_actionParams.targetActorParams, ACTION_TYPE_TARGET_ACTOR);
++        else
++            static_assert(false, "Unsupported Cutscene action type");
++
++#undef ASSERT_INIT_PARAMS
++    }
++
++    Cutscene const* _scene;
++    CutsceneActionTypes _type;
++    uint32 _timeOffset;
++    ObjectGuid _actorGuid;
++};
++
++namespace enumclass_operations
++{
++//ActorTypes
++inline constexpr auto operator==(const CutsceneActorTypes t, const uint32 u) noexcept
++{
++    return static_cast<std::underlying_type<CutsceneActorTypes>::type>(t) == u;
++}
++inline constexpr auto operator==(const uint32 u, const CutsceneActorTypes t) noexcept
++{
++    return t == u;
++}
++inline constexpr auto operator!=(const uint32 u, const CutsceneActorTypes t) noexcept
++{
++    return !(t == u);
++}
++inline constexpr auto operator!=(const CutsceneActorTypes t, const uint32 u) noexcept
++{
++    return u != t;
++}
++inline constexpr auto operator<(const CutsceneActorTypes t, const uint32 u) noexcept
++{
++    return static_cast<std::underlying_type<CutsceneActorTypes>::type>(t) < u;
++}
++inline constexpr auto operator>=(const uint32 u, const CutsceneActorTypes t) noexcept
++{
++    return t < u;
++}
++//ActionTypes
++inline constexpr auto operator==(const CutsceneActionTypes t, const uint32 u) noexcept
++{
++    return static_cast<std::underlying_type<CutsceneActionTypes>::type>(t) == u;
++}
++inline constexpr auto operator==(const uint32 u, const CutsceneActionTypes t) noexcept
++{
++    return t == u;
++}
++}
++
++#endif //CUTSCENE_ACTION_H_
+diff --git a/src/server/game/Cutscenes/CutsceneMgr.cpp b/src/server/game/Cutscenes/CutsceneMgr.cpp
+new file mode 100644
+index 00000000..a4c856ad
+--- /dev/null
++++ b/src/server/game/Cutscenes/CutsceneMgr.cpp
+@@ -0,0 +1,772 @@
++/*
++ * CutsceneMgr
++ */
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "Cutscene.h"
++#include "CutsceneMgr.h"
++#include "DatabaseEnv.h"
++#include "MapManager.h"
++#include "ObjectMgr.h"
++#include "SpellMgr.h"
++#include "WorldDatabase.h"
++
++void CutsceneManager::LoadCutscenes(bool reload)
++{
++    LoadTemplates(reload);
++    FillCutsceneDataMap(reload);
++}
++
++void CutsceneManager::LoadTemplates(bool reload)
++{
++    LoadCutsceneActors(reload);
++    LoadCutsceneActions(reload);
++}
++
++void CutsceneManager::LoadCutsceneActors(bool reload)
++{
++    if (reload)
++        _cutsceneActorTemplates.clear();
++
++    uint32 botoldMSTime = getMSTime();
++
++    uint32 count = 0;
++
++    Field* field;
++    uint8 index;
++
++    //                                                           1        2          3            4  5  6  7  8
++    QueryResult result = WorldDatabase.Query("SELECT cutsceneid, actorid, actortype, entryorguid, x, y, z, o, flags FROM cutscene_template_actor");
++    if (result)
++    {
++        do
++        {
++            field = result->Fetch();
++            index = 0;
++            uint32 cutsceneId =         field[  index].GetUInt32();
++
++            CutsceneActorData cutActoData;
++            cutActoData.actorId =       field[++index].GetUInt32();
++            cutActoData.actorType =     field[++index].GetUInt32();
++            cutActoData.entryOrGuid =   field[++index].GetInt32();
++            cutActoData.x =             field[++index].GetFloat();
++            cutActoData.y =             field[++index].GetFloat();
++            cutActoData.z =             field[++index].GetFloat();
++            cutActoData.o =             field[++index].GetFloat();
++            cutActoData.flags =         field[++index].GetUInt32();
++
++            _cutsceneActorTemplates.insert(decltype(_cutsceneActorTemplates)::value_type(cutsceneId, std::move(cutActoData)));
++            ++count;
++
++        } while (result->NextRow());
++
++        TC_LOG_INFO("server.loading", ">> Loaded %u cutscene actors in %u ms", count, GetMSTimeDiffToNow(botoldMSTime));
++    }
++    else
++        TC_LOG_INFO("server.loading", ">> Cutscene templates are not loaded. Table `cutscene_template_actor` is empty!");
++}
++
++void CutsceneManager::LoadCutsceneActions(bool reload)
++{
++    if (reload)
++        _cutsceneActionTemplates.clear();
++
++    uint32 botoldMSTime = getMSTime();
++
++    uint32 count = 0;
++
++    Field* field;
++    uint8 index;
++
++    //                                                           1        2           3     4          5          6          7          8  9  10 11
++    QueryResult result = WorldDatabase.Query("SELECT cutsceneid, actorid, timeoffset, type, intparam1, intparam2, intparam3, intparam4, x, y, z, o FROM cutscene_template_action ORDER BY cutsceneid, timeoffset, type");
++    if (result)
++    {
++        do
++        {
++            field = result->Fetch();
++            index = 0;
++            uint32 cutsceneId =         field[  index].GetUInt32();
++
++            CutsceneActionData cutActiData;
++            cutActiData.actorId =       field[++index].GetUInt32();
++            cutActiData.timeOffset =    field[++index].GetUInt32();
++            cutActiData.type =          field[++index].GetUInt32();
++            cutActiData.intparam1 =     field[++index].GetInt32();
++            cutActiData.intparam2 =     field[++index].GetInt32();
++            cutActiData.intparam3 =     field[++index].GetInt32();
++            cutActiData.intparam4 =     field[++index].GetInt32();
++            cutActiData.x =             field[++index].GetFloat();
++            cutActiData.y =             field[++index].GetFloat();
++            cutActiData.z =             field[++index].GetFloat();
++            cutActiData.o =             field[++index].GetFloat();
++
++            _cutsceneActionTemplates.insert(decltype(_cutsceneActionTemplates)::value_type(cutsceneId, std::move(cutActiData)));
++            ++count;
++
++        } while (result->NextRow());
++
++        TC_LOG_INFO("server.loading", ">> Loaded %u cutscene actions in %u ms", count, GetMSTimeDiffToNow(botoldMSTime));
++    }
++    else
++        TC_LOG_INFO("server.loading", ">> Cutscene action are not loaded. Table `cutscene_template_action` is empty!");
++}
++
++void CutsceneManager::FillCutsceneDataMap(bool reload)
++{
++    if (reload)
++        _cutsceneDataMap.clear();
++
++    uint32 botoldMSTime = getMSTime();
++
++    uint32 count = 0;
++
++    Field* field;
++    uint8 index;
++
++    //                                                      1      2
++    QueryResult result = WorldDatabase.Query("SELECT entry, mapid, duration FROM cutscene_template");
++    if (result)
++    {
++        do
++        {
++            field = result->Fetch();
++            index = 0;
++            uint32 cutsceneId =         field[  index].GetUInt32();
++            uint32 mapId =              field[++index].GetUInt32();
++            uint32 duration =           field[++index].GetUInt32();
++
++            CutsceneData cutActiData(mapId, duration);
++
++            if (!ValidateCutscene(cutsceneId, cutActiData))
++                continue;
++
++            _cutsceneDataMap.insert(decltype(_cutsceneDataMap)::value_type(cutsceneId, std::move(cutActiData)));
++            ++count;
++
++        } while (result->NextRow());
++
++        TC_LOG_INFO("server.loading", ">> Loaded %u cutscenes in %u ms", count, GetMSTimeDiffToNow(botoldMSTime));
++    }
++    else
++        TC_LOG_INFO("server.loading", ">> Cutscenes are not loaded. Table `cutscene_template` is empty!");
++}
++
++bool CutsceneManager::ValidateCutscene(uint32 cutsceneId, CutsceneData const& sceneData) const
++{
++    using namespace enumclass_operations;
++
++    CutsceneActorMapBounds actorBounds = GetCutsceneActorMapBounds(cutsceneId);
++    CutsceneActionMapBounds actionBounds = GetCutsceneActionMapBounds(cutsceneId);
++
++    if (actorBounds.first == actorBounds.second)
++    {
++        TC_LOG_ERROR("sql.sql", "Cutscene %u has no actors! Skipped.", cutsceneId);
++        return false;
++    }
++
++    if (actionBounds.first == actionBounds.second)
++    {
++        TC_LOG_ERROR("sql.sql", "Cutscene %u has no actions! Skipped.", cutsceneId);
++        return false;
++    }
++
++    Map* map = sMapMgr->FindMap(sceneData.mapId, 0);
++    if (!map)
++    {
++        TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid map id %u! Skipped.", sceneData.mapId);
++        return false;
++    }
++
++    if (sceneData.duration < CUTSCENE_MIN_DURATION || sceneData.duration > CUTSCENE_MAX_DURATION)
++    {
++        TC_LOG_ERROR("sql.sql", "Cutscene %u duration is out of bounds: %u, allowed %u to %u! Skipped.",
++            cutsceneId, sceneData.duration, CUTSCENE_MIN_DURATION, CUTSCENE_MAX_DURATION);
++        return false;
++    }
++
++    for (auto i = actorBounds.first; i != actorBounds.second; ++i)
++    {
++        auto const& c = i->second;
++
++        if (c.actorType == 0 || c.actorType >= CutsceneActorTypes::ACTOR_TYPE_END)
++        {
++            TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid actor type %u! Skipped.", cutsceneId, c.actorType);
++            return false;
++        }
++
++        if (c.entryOrGuid == 0)
++        {
++            if (c.actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++            {
++                TC_LOG_ERROR("sql.sql", "Cutscene %u has entryOrGuid %u for actor type %d! Skipped.", cutsceneId, c.actorType);
++                return false;
++            }
++        }
++        else if (c.entryOrGuid < 0)
++        {
++            if (c.actorType != CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT &&
++                c.actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++            {
++                TC_LOG_ERROR("sql.sql", "Cutscene %u actor has entryOrGuid entry %i for actor entry %u! Skipped.", cutsceneId, -c.entryOrGuid);
++                return false;
++            }
++
++            if (c.actorType == CutsceneActorTypes::ACTOR_TYPE_CREATURE && !sObjectMgr->GetCreatureTemplate(-c.entryOrGuid))
++            {
++                TC_LOG_ERROR("sql.sql", "Cutscene %u actor creature entry %d is not found! Skipped.", cutsceneId, -c.entryOrGuid);
++                return false;
++            }
++            else if (c.actorType == CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT && !sObjectMgr->GetGameObjectTemplate(-c.entryOrGuid))
++            {
++                TC_LOG_ERROR("sql.sql", "Cutscene %u actor gameobject entry %d is not found! Skipped.", cutsceneId, -c.entryOrGuid);
++                return false;
++            }
++        }
++        else //if (c.entryOrGuid > 0)
++        {
++            if (c.actorType != CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT &&
++                c.actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++            {
++                TC_LOG_ERROR("sql.sql", "Cutscene %u actor has entryOrGuid guid %d for actor type %u! Skipped.", cutsceneId, c.entryOrGuid);
++                return false;
++            }
++
++            //Needs to be a single
++            if (c.actorType == CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++            {
++                QueryResult result = WorldDatabase.PQuery("SELECT id FROM creature WHERE guid = %u", uint32(c.entryOrGuid));
++                if (!result)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u actor creature guid %d is not found! Skipped.", cutsceneId, c.entryOrGuid);
++                    return false;
++                }
++            }
++            else //if (c.actorType == uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT))
++            {
++                QueryResult result = WorldDatabase.PQuery("SELECT id FROM gameobject WHERE guid = %u", uint32(c.entryOrGuid));
++                if (!result)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u actor gameobject guid %d is not found! Skipped.", cutsceneId, c.entryOrGuid);
++                    return false;
++                }
++            }
++        }
++
++        if (!(c.flags & CutsceneActorFlags::CUTSCENE_ACTOR_FLAG_NO_INITIAL_POS) &&
++            !Trinity::IsValidMapCoord(c.x, c.y, c.z, c.o) || c.x == 0x0 || c.y == 0x0 || c.z == 0x0)
++        {
++            if (c.entryOrGuid < 0)
++                TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid spawn coords for actor %u! Skipped.", cutsceneId, c.actorId);
++            else
++                TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid start coords for actor %u! Skipped.", cutsceneId, c.actorId);
++            return false;
++        }
++    }
++
++    auto get_actor_by_intparam = [&](int32 intparam) -> bool
++    {
++        for (auto j = actorBounds.first; j != actorBounds.second; ++j)
++            if (int32(j->second.actorId) == intparam)
++                return true;
++        return false;
++    };
++
++    for (auto i = actionBounds.first; i != actionBounds.second; ++i)
++    {
++        auto c = i->second;
++
++        auto actorType = CutsceneActorTypes::ACTOR_TYPE_NONE;
++        for (auto j = actorBounds.first; j != actorBounds.second; ++j)
++        {
++            if (j->second.actorId == c.actorId)
++            {
++                actorType = CutsceneActorTypes(j->second.actorType);
++                break;
++            }
++        }
++
++        if (c.timeOffset > sceneData.duration)
++        {
++            TC_LOG_ERROR("sql.sql", "Cutscene %u action type %u offset %u is beyound scene duration! Skipped.",
++                cutsceneId, c.type, c.timeOffset);
++            return false;
++        }
++
++        if (actorType == CutsceneActorTypes::ACTOR_TYPE_NONE)
++        {
++            TC_LOG_ERROR("sql.sql", "Cutscene %u action type %u at %u: no actor found for id %u! Skipped.",
++                cutsceneId, c.type, c.timeOffset, c.actorId);
++            return false;
++        }
++
++        switch (CutsceneActionTypes(c.type))
++        {
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_ONCE:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam2 < int32(BASE_ATTACK) || c.intparam2 > int32(OFF_ATTACK))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong attack type %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_START:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_ATTACK_STOP:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_SET_WALK:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 < 0 || c.intparam1 > 1)
++                {
++                    TC_LOG_WARN("sql.sql", "Cutscene %u has invalid bool 'on' intparam1 %d for action type %u offset %u! Passed",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_MOVEMENT:
++            {
++                //TODO: Check for spellcast time for possible interrupts
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (!Trinity::IsValidMapCoord(c.x, c.y, c.z, c.o) || c.x == 0x0 || c.y == 0x0 || c.z == 0x0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid coords x %.3f y %.3f z %.3f for action type %u offset %u! Skipped.",
++                        cutsceneId, c.x, c.y, c.z, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 < 0 || c.intparam1 > 1)
++                {
++                    TC_LOG_WARN("sql.sql", "Cutscene %u has invalid bool 'backwards' intparam1 %d for action type %u offset %u! Passed",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                }
++                if (c.intparam1 != 0 && c.o != 0)
++                {
++                    TC_LOG_WARN("sql.sql", "Cutscene %u has bool 'backwards' intparam1 set to %d but has orientation of %.3f for action type %u offset %u! Ignored",
++                        cutsceneId, c.intparam1, c.o, c.type, c.timeOffset);
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_SPELLCAST:
++            {
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam2 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong spellId intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam3 < 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong castFlags intparam3 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam3, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!sSpellMgr->GetSpellInfo(uint32(c.intparam2)))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u no spellInfo for spellId intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_SET_FLAG:
++            {
++                switch (c.intparam1) // field
++                {
++                    case UNIT_FIELD_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE && actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case PLAYER_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case UNIT_FIELD_FLAGS_2:
++                    case UNIT_DYNAMIC_FLAGS:
++                    case UNIT_NPC_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case GAMEOBJECT_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    default:
++                        TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for action type %u offset %u! Skipped.",
++                            cutsceneId, c.intparam1, c.type, c.timeOffset);
++                        return false;
++                }
++                if (c.intparam2 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid flags intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_EMOTE:
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 < 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid emote intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_TEXTEMOTE:
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid textemote intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_EXPLORE:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0 || !sObjectMgr->GetQuestTemplate(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid questid intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam2 < 0 || c.intparam2 > 1)
++                {
++                    TC_LOG_WARN("sql.sql", "Cutscene %u has invalid bool 'group' intparam2 %d for action type %u offset %u! Passed",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_QUESTCREDIT_KILL:
++            {
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 <= 0 || !sObjectMgr->GetQuestTemplate(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid questid intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam2 <= 0 || !sObjectMgr->GetCreatureTemplate(c.intparam2))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid creatureid intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam3 < 0 || c.intparam3 > 1)
++                {
++                    TC_LOG_WARN("sql.sql", "Cutscene %u has invalid bool 'group' intparam3 %d for action type %u offset %u! Passed",
++                        cutsceneId, c.intparam3, c.type, c.timeOffset);
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_REMOVE_FLAG:
++            {
++                switch (c.intparam1) // field
++                {
++                    case UNIT_FIELD_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE && actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case PLAYER_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case UNIT_FIELD_FLAGS_2:
++                    case UNIT_DYNAMIC_FLAGS:
++                    case UNIT_NPC_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    case GAMEOBJECT_FLAGS:
++                        if (actorType != CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT)
++                        {
++                            TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for actor type %u action type %u offset %u! Skipped.",
++                                cutsceneId, c.intparam1, actorType, c.type, c.timeOffset);
++                            return false;
++                        }
++                        break;
++                    default:
++                        TC_LOG_ERROR("sql.sql", "Cutscene %u invalid field intparam1 %d for action type %u offset %u! Skipped.",
++                            cutsceneId, c.intparam1, c.type, c.timeOffset);
++                        return false;
++                }
++                if (c.intparam2 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u invalid flags intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_MOVEMENT_NO_ORI:
++            {
++                //TODO: Check for spellcast time for possible interrupts
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (!Trinity::IsValidMapCoord(c.x, c.y, c.z) || c.x == 0x0 || c.y == 0x0 || c.z == 0x0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid coords x %.3f y %.3f z %.3f for action type %u offset %u! Skipped.",
++                        cutsceneId, c.x, c.y, c.z, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            }
++            case CutsceneActionTypes::ACTION_TYPE_SPEAK:
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 < 0) // can be 0 for no target
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam2 <= 0 || !sObjectMgr->GetBroadcastText(c.intparam2))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid broadcast_text intparam2 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam2, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam3 <= 0 || CutsceneSpeechTypes(c.intparam3) >= CutsceneSpeechTypes::SPEECH_TYPE_END)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u has invalid speech_type intparam3 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam3, c.type, c.timeOffset);
++                    return false;
++                }
++                if (c.intparam1 > 0 && !get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (CutsceneSpeechTypes(c.intparam3) == CutsceneSpeechTypes::SPEECH_TYPE_WHISPER && c.intparam1 != 1)
++                {
++                    //Whisper is only applicable to a player target
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-player actor whisper target intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_TARGET_ACTOR:
++                if (/*actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && */actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    if (actorType == CutsceneActorTypes::ACTOR_TYPE_PLAYER)
++                        TC_LOG_ERROR("sql.sql", "Actor is a player: use ACTION_TYPE_FACE_ACTOR(%u) for that",
++                            (uint32)CutsceneActionTypes::ACTION_TYPE_FACE_ACTOR);
++                    return false;
++                }
++                if (c.intparam1 <= 0)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor intparam1 %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                if (!get_actor_by_intparam(c.intparam1))
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u non-existent actor %d for action type %u offset %u! Skipped.",
++                        cutsceneId, c.intparam1, c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            //NIY
++            case CutsceneActionTypes::ACTION_TYPE_MOUNT:
++            case CutsceneActionTypes::ACTION_TYPE_DISMOUNT:
++            case CutsceneActionTypes::ACTION_TYPE_PLAY_ANIM_KIT:
++                if (actorType != CutsceneActorTypes::ACTOR_TYPE_PLAYER && actorType != CutsceneActorTypes::ACTOR_TYPE_CREATURE)
++                {
++                    TC_LOG_ERROR("sql.sql", "Cutscene %u wrong actor type %u for action type %u offset %u! Skipped.",
++                        cutsceneId, uint32(actorType), c.type, c.timeOffset);
++                    return false;
++                }
++                break;
++            case CutsceneActionTypes::ACTION_TYPE_NONE:
++                TC_LOG_WARN("sql.sql", "Cutscene %u has ACTION_TYPE_NONE! Passed...", cutsceneId);
++                break;
++            default:
++                TC_LOG_ERROR("sql.sql", "Cutscene %u has unsupported action type %u! Skipped.", cutsceneId, c.type);
++                return false;
++        }
++    }
++
++    return true;
++}
++
++CutsceneData const* CutsceneManager::GetCutsceneData(uint32 cutsceneId) const
++{
++    auto ci = _cutsceneDataMap.find(cutsceneId);
++    return ci == _cutsceneDataMap.end() ? nullptr : &ci->second;
++}
++
++CutsceneActorMapBounds CutsceneManager::GetCutsceneActorMapBounds(uint32 cutsceneId) const
++{
++    return GetCutsceneActorTemplates().equal_range(cutsceneId);
++}
++
++CutsceneActionMapBounds CutsceneManager::GetCutsceneActionMapBounds(uint32 cutsceneId) const
++{
++    return GetCutsceneActionTemplates().equal_range(cutsceneId);
++}
++
++CutsceneManager* CutsceneManager::instance()
++{
++    static CutsceneManager mgr;
++    return &mgr;
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
+diff --git a/src/server/game/Cutscenes/CutsceneMgr.h b/src/server/game/Cutscenes/CutsceneMgr.h
+new file mode 100644
+index 00000000..7dbd482c
+--- /dev/null
++++ b/src/server/game/Cutscenes/CutsceneMgr.h
+@@ -0,0 +1,87 @@
++/*
++ * CutsceneMgr
++ */
++
++#ifndef CUTSCENE_MGR_H_
++#define CUTSCENE_MGR_H_
++
++#include <map>
++
++struct CutsceneActorData
++{
++    uint32 actorId;
++    uint32 actorType;
++    int32 entryOrGuid;
++    float x;
++    float y;
++    float z;
++    float o;
++    uint32 flags;
++};
++
++struct CutsceneActionData
++{
++    uint32 actorId;
++    uint32 timeOffset;
++    uint32 type;
++    int32 intparam1;
++    int32 intparam2;
++    int32 intparam3;
++    int32 intparam4;
++    float x;
++    float y;
++    float z;
++    float o;
++};
++
++typedef std::multimap<uint32 /*cutscene_id*/, CutsceneActorData> CutsceneActorMap;
++typedef std::pair<CutsceneActorMap::const_iterator, CutsceneActorMap::const_iterator> CutsceneActorMapBounds;
++
++typedef std::multimap<uint32 /*cutscene_id*/, CutsceneActionData> CutsceneActionMap;
++typedef std::pair<CutsceneActionMap::const_iterator, CutsceneActionMap::const_iterator> CutsceneActionMapBounds;
++
++struct CutsceneData
++{
++    uint32 mapId;
++    uint32 duration;
++
++    explicit CutsceneData(uint32 mapId, uint32 duration) : mapId(mapId), duration(duration) {}
++};
++
++typedef std::multimap<uint32 /*cutscene_id*/, CutsceneData> CutsceneDataMap;
++typedef std::pair<CutsceneDataMap::const_iterator, CutsceneDataMap::const_iterator> CutsceneDataMapBounds;
++
++class CutsceneManager
++{
++public:
++    static CutsceneManager* instance();
++
++    void LoadCutscenes(bool reload = false);
++    void LoadTemplates(bool reload = false);
++
++    void LoadCutsceneActors(bool reload = false);
++    void LoadCutsceneActions(bool reload = false);
++    void FillCutsceneDataMap(bool reload = false);
++
++    bool ValidateCutscene(uint32 cutsceneId, CutsceneData const& sceneData) const;
++
++    CutsceneActorMap const& GetCutsceneActorTemplates() const { return _cutsceneActorTemplates; }
++    CutsceneActionMap const& GetCutsceneActionTemplates() const { return _cutsceneActionTemplates; }
++    CutsceneDataMap const& GetCutsceneDataMap() const { return _cutsceneDataMap; }
++
++    CutsceneData const* GetCutsceneData(uint32 cutsceneId) const;
++
++    CutsceneActorMapBounds GetCutsceneActorMapBounds(uint32 cutsceneId) const;
++    CutsceneActionMapBounds GetCutsceneActionMapBounds(uint32 cutsceneId) const;
++
++private:
++    CutsceneActorMap _cutsceneActorTemplates;
++    CutsceneActionMap _cutsceneActionTemplates;
++    CutsceneDataMap _cutsceneDataMap;
++
++    CutsceneManager() = default;
++};
++
++#define sCutsceneMgr CutsceneManager::instance()
++
++#endif //CUTSCENE_MGR_H_
+diff --git a/src/server/game/Entities/Object/Object.cpp b/src/server/game/Entities/Object/Object.cpp
+index 8aa8702a..8a175c37 100644
+--- a/src/server/game/Entities/Object/Object.cpp
++++ b/src/server/game/Entities/Object/Object.cpp
+@@ -22,6 +22,9 @@
+ #include "CinematicMgr.h"
+ #include "Common.h"
+ #include "Creature.h"
++//Cutscene
++#include "Cutscene.h"
++//End Cutscene
+ #include "GameTime.h"
+ #include "GridNotifiersImpl.h"
+ #include "G3DPosition.hpp"
+@@ -1092,11 +1095,23 @@ void WorldObject::RemoveFromWorld()
+     if (!IsInWorld())
+         return;
+ 
++    //Cutscene
++    LeaveCutscene();
++    //End Cutscene
++
+     DestroyForNearbyPlayers();
+ 
+     Object::RemoveFromWorld();
+ }
+ 
++//Cutscene
++void WorldObject::LeaveCutscene()
++{
++    if (IsInCutscene())
++        GetCutscene()->RemoveActor(GetGUID());
++}
++//End Cutscene
++
+ bool WorldObject::IsInWorldPvpZone() const
+ {
+     switch (GetZoneId())
+@@ -1559,6 +1574,9 @@ bool WorldObject::CanSeeOrDetect(WorldObject const* obj, bool ignoreStealth, boo
+     if (obj->IsAlwaysVisibleFor(this) || CanAlwaysSee(obj))
+         return true;
+ 
++    if (!sConditionMgr->IsObjectMeetingVisibilityByObjectIdConditions(obj->GetTypeId(), obj->GetEntry(), const_cast<WorldObject*>(this)))
++        return false;
++
+     bool corpseVisibility = false;
+     if (distanceCheck)
+     {
+@@ -1635,6 +1653,11 @@ bool WorldObject::CanSeeOrDetect(WorldObject const* obj, bool ignoreStealth, boo
+     if (obj->IsInvisibleDueToDespawn())
+         return false;
+ 
++    //Cutscene
++    //if ((IsInCutscene() || obj->IsInCutscene()) && GetCutscene() != obj->GetCutscene())
++    //    return false;
++    //End Cutscene
++
+     if (!CanDetect(obj, ignoreStealth, checkAlert))
+         return false;
+ 
+@@ -2959,7 +2982,10 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
+ 
+     // check flags
+     if (unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_ON_TAXI | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2))
+-        return false;
++        //Cutscene: force reaction from outside serverside
++        if (!IsInCutscene() || !unitTarget->IsInCutscene() || GetCutscene() != unitTarget->GetCutscene())
++        //End Cutscene
++            return false;
+ 
+     Unit const* unitOrOwner = unit;
+     GameObject const* go = ToGameObject();
+@@ -3108,7 +3134,10 @@ bool WorldObject::IsValidAssistTarget(WorldObject const* target, SpellInfo const
+ 
+     // check flags for negative spells
+     if (isNegativeSpell && unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_ON_TAXI | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2))
+-        return false;
++        //Cutscene: force reaction from outside serverside
++        if (!IsInCutscene() || !unitTarget->IsInCutscene() || GetCutscene() != unitTarget->GetCutscene())
++        //End Cutscene
++            return false;
+ 
+     if (isNegativeSpell || !bySpell || !bySpell->HasAttribute(SPELL_ATTR6_ASSIST_IGNORE_IMMUNE_FLAG))
+     {
+diff --git a/src/server/game/Entities/Object/Object.h b/src/server/game/Entities/Object/Object.h
+index f1fd3825..549e276e 100644
+--- a/src/server/game/Entities/Object/Object.h
++++ b/src/server/game/Entities/Object/Object.h
+@@ -54,6 +54,9 @@ class UpdateData;
+ class WorldObject;
+ class WorldPacket;
+ class ZoneScript;
++//Cutcenes
++class Cutscene;
++//End Cutscenes
+ struct FactionTemplateEntry;
+ struct PositionFullTerrainStatus;
+ struct QuaternionData;
+@@ -526,6 +529,14 @@ class TC_GAME_API WorldObject : public Object, public WorldLocation
+         // Event handler
+         EventProcessor m_Events;
+ 
++        //Cutscene
++        bool IsInCutscene() const { return !!_cutscene; }
++        Cutscene* GetCutscene() const { return _cutscene; }
++        void EnterCutscene(Cutscene* scene) { ASSERT(!_cutscene); _cutscene = scene; }
++        void ResetCutscene() { _cutscene = nullptr; }
++        void LeaveCutscene();
++        //End Cutscene
++
+     protected:
+         std::string m_name;
+         bool m_isActive;
+@@ -537,6 +548,10 @@ class TC_GAME_API WorldObject : public Object, public WorldLocation
+         // transports
+         Transport* m_transport;
+ 
++        //Cutscene
++        Cutscene* _cutscene = nullptr;
++        //End Cutscene
++
+         virtual void ProcessPositionDataChanged(PositionFullTerrainStatus const& data);
+         uint32 m_zoneId;
+         uint32 m_areaId;
+diff --git a/src/server/game/Entities/Player/Player.cpp b/src/server/game/Entities/Player/Player.cpp
+index c712bd32..2b06feed 100644
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -1687,6 +1687,10 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
+     else
+         TC_LOG_DEBUG("maps", "Player %s (%s) is being teleported to map (MapID: %u)", GetName().c_str(), GetGUID().ToString().c_str(), mapid);
+ 
++    //Cutscene: cancel even if local teleport occurs
++    LeaveCutscene();
++    //End Cutscene
++
+     if (m_vehicle)
+         ExitVehicle();
+ 
+@@ -2317,6 +2321,11 @@ Creature* Player::GetNPCIfCanInteractWith(ObjectGuid const& guid, NPCFlags npcFl
+     if (IsInFlight())
+         return nullptr;
+ 
++    //Cutscene
++    if (IsInCutscene())
++        return nullptr;
++    //End Cutscene
++
+     // exist (we need look pets also for some interaction (quest/etc)
+     Creature* creature = ObjectAccessor::GetCreatureOrPetOrVehicle(*this, guid);
+     if (!creature)
+@@ -2365,6 +2374,11 @@ GameObject* Player::GetGameObjectIfCanInteractWith(ObjectGuid const& guid) const
+     if (IsInFlight())
+         return nullptr;
+ 
++    //Cutscene
++    if (IsInCutscene())
++        return nullptr;
++    //End Cutscene
++
+     // exist
+     GameObject* go = ObjectAccessor::GetGameObject(*this, guid);
+     if (!go)
+@@ -25680,6 +25694,11 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
+ 
+ bool Player::IsPetNeedBeTemporaryUnsummoned() const
+ {
++    //Cutscene: do not allow pet
++    if (IsInCutscene())
++        return true;
++    //End Cutscene
++
+     return !IsInWorld() || !IsAlive() || IsMounted() /*+in flight*/;
+ }
+ 
+diff --git a/src/server/game/Handlers/ChatHandler.cpp b/src/server/game/Handlers/ChatHandler.cpp
+index 6e3d5765..85838e49 100644
+--- a/src/server/game/Handlers/ChatHandler.cpp
++++ b/src/server/game/Handlers/ChatHandler.cpp
+@@ -168,6 +168,22 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
+                         break;
+                 }
+             }
++
++            //Cutscene
++            if (sender->IsInCutscene())
++            {
++                switch (type)
++                {
++                    case CHAT_MSG_SAY:
++                    case CHAT_MSG_YELL:
++                    case CHAT_MSG_EMOTE:
++                    case CHAT_MSG_TEXT_EMOTE:
++                        return;
++                    default:
++                        break;
++                }
++            }
++            //End Cutscene
+         }
+     }
+ 
+@@ -568,6 +584,11 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
+ 
+ void WorldSession::HandleEmoteOpcode(WorldPackets::Chat::EmoteClient& packet)
+ {
++    //Cutscene
++    if (_player->IsInCutscene())
++        return;
++    //End Cutscene
++
+     Emote emoteId = static_cast<Emote>(packet.EmoteID);
+ 
+     // restrict to the only emotes hardcoded in client
+@@ -625,6 +646,11 @@ void WorldSession::HandleTextEmoteOpcode(WorldPacket& recvData)
+         return;
+     }
+ 
++    //Cutscene
++    if (_player->IsInCutscene())
++        return;
++    //End Cutscene
++
+     uint32 text_emote, emoteNum;
+     ObjectGuid guid;
+ 
+diff --git a/src/server/game/Handlers/SpellHandler.cpp b/src/server/game/Handlers/SpellHandler.cpp
+index 4bc8da95..70946a7c 100644
+--- a/src/server/game/Handlers/SpellHandler.cpp
++++ b/src/server/game/Handlers/SpellHandler.cpp
+@@ -437,6 +437,16 @@ void WorldSession::HandleCastSpellOpcode(WorldPacket& recvPacket)
+ 
+     Spell* spell = new Spell(caster, spellInfo, triggerFlag);
+     spell->m_cast_count = castCount;                       // set count of casts
++
++    //Cutscene
++    if (_player->IsInCutscene())
++    {
++        spell->SendCastResult(SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW);
++        delete spell;
++        return;
++    }
++    //End Cutscene
++
+     spell->prepare(targets);
+ }
+ 
+diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
+index 11f82a29..2a437acb 100644
+--- a/src/server/game/Maps/Map.cpp
++++ b/src/server/game/Maps/Map.cpp
+@@ -18,6 +18,9 @@
+ #include "Map.h"
+ #include "Battleground.h"
+ #include "CellImpl.h"
++//Cutscene
++#include "Cutscene.h"
++//End Cutscene
+ #include "DatabaseEnv.h"
+ #include "DisableMgr.h"
+ #include "DynamicTree.h"
+@@ -874,6 +877,11 @@ void Map::Update(uint32 t_diff)
+         obj->Update(t_diff);
+     }
+ 
++    //Cutscene
++    for (Cutscene* scene : GetActiveCutscenes())
++        scene->Update(t_diff);
++    //End Cutscene
++
+     SendObjectUpdates();
+ 
+     ///- Process necessary scripts
+@@ -911,6 +919,73 @@ void Map::Update(uint32 t_diff)
+         TC_METRIC_TAG("map_instanceid", std::to_string(GetInstanceId())));
+ }
+ 
++//Cutscene
++Cutscene* Map::GetCutscene(uint32 guid) const
++{
++    for (auto* scene : _activeCutscenes)
++        if (scene->GetGuid() == guid)
++            return scene;
++    return nullptr;
++}
++
++void Map::RegisterCutscene(Cutscene* scene)
++{
++    if (_activeCutscenesLock)
++    {
++        TC_LOG_ERROR("maps", "RegisterCutscene(): called while locked! Cutscene guid %u id %u", scene->GetGuid(), scene->GetId());
++        return;
++    }
++
++    _activeCutscenes.push_back(scene);
++}
++
++bool Map::UnRegisterCutscene(Cutscene* scene)
++{
++    if (!_activeCutscenesLock)
++    {
++        TC_LOG_ERROR("maps", "UnRegisterCutscene(): called while unlocked! Cutscene guid %u id %u", scene->GetGuid(), scene->GetId());
++        return false;
++    }
++
++    for (auto ci = _activeCutscenes.cbegin(); ci != _activeCutscenes.cend(); ++ci)
++    {
++        if ((*ci)->GetId() == scene->GetId())
++        {
++            _activeCutscenes.erase(ci);
++            return true;
++        }
++    }
++
++    TC_LOG_ERROR("maps", "UnRegisterCutscene(): cutscene not found! Cutscene guid %u id %u", scene->GetGuid(), scene->GetId());
++    return false;
++}
++
++void Map::AddCutsceneToRemoveList(Cutscene* scene)
++{
++    _cutscenesToRemoveList.push_back(scene);
++}
++
++void Map::RemoveAllCutscenesInRemoveList()
++{
++    ASSERT(!_activeCutscenesLock);
++
++    _activeCutscenesLock = true;
++    for (Cutscene* scene : _cutscenesToRemoveList)
++    {
++        if (!UnRegisterCutscene(scene))
++        {
++            TC_LOG_ERROR("maps", "RemoveAllCutscenesInRemoveList(): can't find cutscene guid %u id %u", scene->GetGuid(), scene->GetId());
++            continue;
++        }
++
++        delete scene;
++    }
++
++    _cutscenesToRemoveList.clear();
++    _activeCutscenesLock = false;
++}
++//End Cutscene
++
+ struct ResetNotifier
+ {
+     template<class T>inline void resetNotify(GridRefManager<T> &m)
+@@ -3529,6 +3604,10 @@ void Map::DelayedUpdate(uint32 t_diff)
+ 
+     RemoveAllObjectsInRemoveList();
+ 
++    //Cutscene
++    RemoveAllCutscenesInRemoveList();
++    //End Cutscene
++
+     // Don't unload grids if it's battleground, since we may have manually added GOs, creatures, those doesn't load from DB at grid re-load !
+     // This isn't really bother us, since as soon as we have instanced BG-s, the whole map unloads as the BG gets ended
+     if (!IsBattlegroundOrArena())
+diff --git a/src/server/game/Maps/Map.h b/src/server/game/Maps/Map.h
+index c926a00f..1fd6d542 100644
+--- a/src/server/game/Maps/Map.h
++++ b/src/server/game/Maps/Map.h
+@@ -41,6 +41,9 @@
+ class Battleground;
+ class BattlegroundMap;
+ class CreatureGroup;
++//Cutcenes
++class Cutscene;
++//End Cutscenes
+ class GameObjectModel;
+ class Group;
+ class InstanceMap;
+@@ -650,6 +653,18 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
+ 
+         virtual std::string GetDebugInfo() const;
+ 
++        //Cutscene
++        std::vector<Cutscene*> const& GetActiveCutscenes() const { return _activeCutscenes; }
++        std::vector<Cutscene*>& GetActiveCutscenes() { return _activeCutscenes; }
++        size_t GetActiveCutscenesCount() const { return _activeCutscenes.size(); }
++        bool HasActiveCutscenes() const { return !_activeCutscenes.empty(); }
++        Cutscene* GetCutscene(uint32 guid) const;
++        void RegisterCutscene(Cutscene* scene);
++        bool UnRegisterCutscene(Cutscene* scene);
++        void AddCutsceneToRemoveList(Cutscene* scene);
++        void RemoveAllCutscenesInRemoveList();
++        //End Cutscene
++
+     private:
+         void LoadMapAndVMap(int gx, int gy);
+         void LoadVMap(int gx, int gy);
+@@ -682,6 +697,12 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
+         bool _dynamicObjectsToMoveLock;
+         std::vector<DynamicObject*> _dynamicObjectsToMove;
+ 
++        //Cutcene
++        bool _activeCutscenesLock = false;
++        std::vector<Cutscene*> _activeCutscenes;
++        std::vector<Cutscene*> _cutscenesToRemoveList;
++        //End Cutscene
++
+         bool IsGridLoaded(GridCoord const&) const;
+         void EnsureGridCreated(GridCoord const&);
+         void EnsureGridCreated_i(GridCoord const&);
+diff --git a/src/server/game/Spells/SpellInfo.cpp b/src/server/game/Spells/SpellInfo.cpp
+index 9ca42cbd..2c4d6c9e 100644
+--- a/src/server/game/Spells/SpellInfo.cpp
++++ b/src/server/game/Spells/SpellInfo.cpp
+@@ -1656,6 +1656,11 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
+     if (!HasAttribute(SPELL_ATTR6_CAN_TARGET_INVISIBLE) && !caster->CanSeeOrDetect(target, implicit))
+         return SPELL_FAILED_BAD_TARGETS;
+ 
++    //Cutscene
++    if (caster->GetCutscene() != target->GetCutscene())
++        return SPELL_FAILED_BAD_TARGETS;
++    //End Cutscene
++
+     Unit const* unitTarget = target->ToUnit();
+ 
+     // creature/player specific target checks
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index ed38d250..5b8faa7b 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -39,6 +39,9 @@
+ #include "CreatureAIRegistry.h"
+ #include "CreatureGroups.h"
+ #include "CreatureTextMgr.h"
++//Cutscene
++#include "CutsceneMgr.h"
++//End Cutscene
+ #include "DatabaseEnv.h"
+ #include "DisableMgr.h"
+ #include "GameEventMgr.h"
+@@ -2196,6 +2199,11 @@ void World::SetInitialWorldSettings()
+     TC_LOG_INFO("server.loading", "Loading Warden Action Overrides...");
+     sWardenCheckMgr->LoadWardenOverrides();
+ 
++    ///- Initialize Cutscenes
++    TC_LOG_INFO("server.loading", "Loading Cutscenes...");
++    sCutsceneMgr->LoadCutscenes();
++    //End Cutscenes
++
+     TC_LOG_INFO("server.loading", "Deleting expired bans...");
+     LoginDatabase.Execute("DELETE FROM ip_banned WHERE unbandate <= UNIX_TIMESTAMP() AND unbandate<>bandate");      // One-time query
+ 
+diff --git a/src/server/scripts/Custom/cs_cutscene.cpp b/src/server/scripts/Custom/cs_cutscene.cpp
+new file mode 100644
+index 00000000..52b8fe32
+--- /dev/null
++++ b/src/server/scripts/Custom/cs_cutscene.cpp
+@@ -0,0 +1,80 @@
++/*
++Name: cs_cutscene
++%Complete: ???
++Comment: Cutscene system commands by Trickerer (onlysuffering@gmail.com)
++Category: scripts/commands/cutscenes/
++*/
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "Chat.h"
++#include "Cutscene.h"
++#include "CutsceneMgr.h"
++#include "Log.h"
++#include "RBAC.h"
++#include "ScriptMgr.h"
++#include "WorldSession.h"
++
++using namespace Trinity::ChatCommands;
++
++class script_cutscene_commands : public CommandScript
++{
++public:
++    script_cutscene_commands() : CommandScript("script_cutscene_commands") { }
++
++    ChatCommandTable GetCommands() const override
++    {
++        static ChatCommandTable cutsceneCommandTable =
++        {
++            { "testx",          HandleCutsceneTestXCommand,             rbac::RBAC_PERM_COMMAND_NPC_TAME,               Console::No  },
++            { "reload",         HandleCutsceneReloadCommand,            rbac::RBAC_PERM_COMMAND_NPC_TAME,               Console::Yes },
++        };
++
++        static ChatCommandTable commandTable =
++        {
++            { "cutscene",       cutsceneCommandTable                                                                                 },
++        };
++        return commandTable;
++    }
++
++    static bool HandleCutsceneTestXCommand(ChatHandler* handler, Optional<uint32> test)
++    {
++        if (!test)
++            return false;
++
++        if (!sCutsceneMgr->GetCutsceneData(*test))
++            return false;
++
++        handler->PSendSysMessage("Running Test %u...", *test);
++
++        Cutscene* cs = new Cutscene(handler->GetPlayer(), *test);
++        if (!cs->Initialize())
++        {
++            delete cs;
++            return false;
++        }
++        cs->Run();
++
++        return true;
++    }
++
++    static bool HandleCutsceneReloadCommand(ChatHandler* handler)
++    {
++        sCutsceneMgr->LoadCutscenes(true);
++        handler->SendSysMessage("Cutscenes reloaded");
++        return true;
++    }
++};
++
++void AddSC_script_cutscene_commands()
++{
++    new script_cutscene_commands();
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
+diff --git a/src/server/scripts/Custom/custom_script_loader.cpp b/src/server/scripts/Custom/custom_script_loader.cpp
+index 9e5e9ba2..00bfab53 100644
+--- a/src/server/scripts/Custom/custom_script_loader.cpp
++++ b/src/server/scripts/Custom/custom_script_loader.cpp
+@@ -17,8 +17,15 @@
+ 
+ // This is where scripts' loading functions should be declared:
+ 
++void AddSC_script_cutscene_commands();
++void AddSC_script_cutscene_npcs();
++void AddSC_script_cutscene_spells();
++
+ // The name of this function should match:
+ // void Add${NameOfDirectory}Scripts()
+ void AddCustomScripts()
+ {
++    AddSC_script_cutscene_commands();
++    AddSC_script_cutscene_npcs();
++    AddSC_script_cutscene_spells();
+ }
+diff --git a/src/server/scripts/Custom/npc_cutscene.cpp b/src/server/scripts/Custom/npc_cutscene.cpp
+new file mode 100644
+index 00000000..990e2ab1
+--- /dev/null
++++ b/src/server/scripts/Custom/npc_cutscene.cpp
+@@ -0,0 +1,110 @@
++/*
++Name: npc_cutscene
++%Complete: ???
++Comment: Cutscene system npc scripts by Trickerer (onlysuffering@gmail.com)
++Category: scripts/npcs/cutscenes/
++*/
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "GossipDef.h"
++#include "Player.h"
++#include "ScriptMgr.h"
++#include "SpellDefines.h"
++
++static constexpr uint32 SPELL_CUTSCENE_START = 213000u;
++
++enum CutscenesByQuestId : int32
++{
++    CUTSCENE_NONE                           = 0,
++    CUTSCENE_Q213000                        = 1
++};
++
++//8 bytes!
++struct CutsceneTriggerGossip
++{
++    //default constructor access
++    template<size_t>
++    friend struct CutsceneTriggerBase;
++
++    explicit constexpr CutsceneTriggerGossip(uint16 menuid, uint16 action, CutscenesByQuestId csid) noexcept :
++        menuid(menuid), action(action), csid(csid) {}
++    explicit /*non-constexpr*/ CutsceneTriggerGossip(uint16 menuid, uint16 action) noexcept :
++        menuid(menuid), action(action) {}
++
++    CutsceneTriggerGossip(const CutsceneTriggerGossip&) = default;
++    CutsceneTriggerGossip(CutsceneTriggerGossip&&) = default;
++
++    inline constexpr bool operator==(CutsceneTriggerGossip const& gr) const
++    {
++        return gr.menuid == menuid && gr.action == action;
++    }
++
++    const uint16 menuid = 0;
++    const uint16 action = 0;
++    const CutscenesByQuestId csid = CUTSCENE_NONE;
++
++private:
++    CutsceneTriggerGossip() = default;
++};
++
++template<size_t N>
++struct CutsceneTriggerBase : public ScriptedAI
++{
++    explicit CutsceneTriggerBase(Creature* creature, std::array<CutsceneTriggerGossip, N>&& ctgs) : ScriptedAI(creature), _ctgs(std::move(ctgs)) {}
++
++    bool OnGossipSelect(Player* player, uint32 menuid, uint32 gossipListId) override
++    {
++        auto cscit = std::find(_ctgs.begin(), _ctgs.end(), CutsceneTriggerGossip(menuid, player->PlayerTalkClass->GetGossipOptionAction(gossipListId)));
++        if (cscit != _ctgs.end())
++        {
++            CastSpellExtraArgs args(TRIGGERED_FULL_MASK);
++            args.AddSpellBP0(cscit->csid);
++            player->CastSpell(player, SPELL_CUTSCENE_START, args);
++            return true;
++        }
++
++        return false;
++    }
++
++private:
++    const std::array<CutsceneTriggerGossip, N> _ctgs;
++};
++
++// Cutscene gossip NPC script instancing template
++#define CutsceneTriggerNpc(name, ...) \
++class name : public CreatureScript \
++{ \
++public: \
++    name() : CreatureScript(#name) { } \
++    enum : std::size_t { CUTSCENES_COUNT = std::size({ __VA_ARGS__ }) }; \
++    struct AI_ ##name : public CutsceneTriggerBase<CUTSCENES_COUNT> \
++    { AI_ ##name(Creature* creature) : CutsceneTriggerBase(creature, std::array{ __VA_ARGS__ }) { } }; \
++    CreatureAI* GetAI(Creature* creature) const override { return new AI_ ##name(creature); } \
++}
++
++///////////////////////////////
++// INSTANCES START FROM HERE //
++///////////////////////////////
++
++//Cutscene Trigger Gossips
++static constexpr CutsceneTriggerGossip CTG_213000 { 65002, 1, CUTSCENE_Q213000 };
++
++// NPC Scripts
++CutsceneTriggerNpc(npc_airen_q213000, CTG_213000);
++
++//////////////
++// REGISTRY //
++//////////////
++void AddSC_script_cutscene_npcs()
++{
++    new npc_airen_q213000();
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
+diff --git a/src/server/scripts/Custom/spell_cutscene.cpp b/src/server/scripts/Custom/spell_cutscene.cpp
+new file mode 100644
+index 00000000..f69cd980
+--- /dev/null
++++ b/src/server/scripts/Custom/spell_cutscene.cpp
+@@ -0,0 +1,62 @@
++/*
++Name: spell_cutscene
++%Complete: ???
++Comment: Cutscene system spell scripts by Trickerer (onlysuffering@gmail.com)
++Category: scripts/spells/cutscenes/
++*/
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(push)
++#pragma warning(3:4100)
++#pragma warning(3:4189)
++#endif
++
++#include "Cutscene.h"
++#include "CutsceneMgr.h"
++#include "Log.h"
++#include "ScriptMgr.h"
++
++//constexpr uint32 flagg0 = SPELL_ATTR0_HIDDEN_CLIENTSIDE|SPELL_ATTR0_HIDE_IN_COMBAT_LOG|SPELL_ATTR0_CASTABLE_WHILE_MOUNTED|SPELL_ATTR0_CASTABLE_WHILE_SITTING|SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY;
++//constexpr uint32 flagg2 = SPELL_ATTR2_CAN_TARGET_NOT_IN_LOS;
++//constexpr uint32 flagg3 = SPELL_ATTR3_ONLY_TARGET_PLAYERS;
++//constexpr uint32 flagg4 = SPELL_ATTR4_CAN_CAST_WHILE_CASTING;
++
++//constexpr uint32 flagg6 = SPELL_ATTR6_CAN_TARGET_UNTARGETABLE;
++
++// 213000 - Start Cutscene
++class spell_cutscene_start : public SpellScript
++{
++    PrepareSpellScript(spell_cutscene_start);
++
++    bool Load() override
++    {
++        return GetExplTargetUnit() && GetExplTargetUnit()->GetTypeId() == TYPEID_PLAYER &&
++            sCutsceneMgr->GetCutsceneData(uint32(GetEffectInfo(EFFECT_0).CalcValue(GetExplTargetUnit())));
++    }
++
++    void HandleDummy(SpellEffIndex /*effIndex*/)
++    {
++        Cutscene* cs = new Cutscene(GetExplTargetUnit()->ToPlayer(), uint32(GetEffectValue()));
++        if (!cs->Initialize())
++        {
++            TC_LOG_ERROR("cutscenes", "spell_cutscene_start: Could not start cutscene %d by spellId %u!", GetEffectValue(), GetSpellInfo()->Id);
++            delete cs;
++            return;
++        }
++        cs->Run();
++    }
++
++    void Register() override
++    {
++        OnEffectHitTarget += SpellEffectFn(spell_cutscene_start::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
++    }
++};
++
++void AddSC_script_cutscene_spells()
++{
++    RegisterSpellScript(spell_cutscene_start);
++}
++
++#if TRINITY_COMPILER == TRINITY_COMPILER_MICROSOFT
++#pragma warning(pop)
++#endif
