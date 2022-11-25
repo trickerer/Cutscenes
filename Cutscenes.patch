@@ -1,4 +1,4 @@
- src/server/game/Conditions/ConditionMgr.cpp        |  68 +-
+ src/server/game/Conditions/ConditionMgr.cpp        |  77 +-
  src/server/game/Conditions/ConditionMgr.h          |   2 +
  src/server/game/Cutscenes/Cutscene.cpp             | 745 ++++++++++++++++++++
  src/server/game/Cutscenes/Cutscene.h               | 160 +++++
@@ -19,7 +19,7 @@
  src/server/scripts/Custom/custom_script_loader.cpp |   7 +
  src/server/scripts/Custom/npc_cutscene.cpp         | 110 +++
  src/server/scripts/Custom/spell_cutscene.cpp       |  62 ++
- 21 files changed, 2874 insertions(+), 3 deletions(-)
+ 21 files changed, 2882 insertions(+), 4 deletions(-)
  create mode 100644 src/server/game/Cutscenes/Cutscene.cpp
  create mode 100644 src/server/game/Cutscenes/Cutscene.h
  create mode 100644 src/server/game/Cutscenes/CutsceneAction.cpp
@@ -31,7 +31,7 @@
  create mode 100644 src/server/scripts/Custom/spell_cutscene.cpp
 
 diff --git a/src/server/game/Conditions/ConditionMgr.cpp b/src/server/game/Conditions/ConditionMgr.cpp
-index ca9c9aee..864c7ed4 100644
+index ca9c9aee..405b0dc3 100644
 --- a/src/server/game/Conditions/ConditionMgr.cpp
 +++ b/src/server/game/Conditions/ConditionMgr.cpp
 @@ -17,6 +17,7 @@
@@ -42,7 +42,23 @@ index ca9c9aee..864c7ed4 100644
  #include "DatabaseEnv.h"
  #include "GameEventMgr.h"
  #include "GameObject.h"
-@@ -967,7 +968,8 @@ bool ConditionMgr::CanHaveSourceGroupSet(ConditionSourceType sourceType)
+@@ -65,7 +66,14 @@ char const* const ConditionMgr::StaticSourceTypeData[CONDITION_SOURCE_TYPE_MAX]
+     "Npc Vendor",
+     "Spell Proc",
+     "Terrain Swap",
+-    "Phase"
++    "Phase",
++    "Graveyard",
++    "AreaTrigger",
++    "ConversationLine",
++    "AreaTrigger Client Triggered",
++    "Trainer Spell",
++    "Object Visibility (by ID)",
++    "Spawn Group"
+ };
+ 
+ ConditionMgr::ConditionTypeInfo const ConditionMgr::StaticConditionTypeData[CONDITION_MAX] =
+@@ -967,7 +975,8 @@ bool ConditionMgr::CanHaveSourceGroupSet(ConditionSourceType sourceType)
              sourceType == CONDITION_SOURCE_TYPE_SPELL_IMPLICIT_TARGET ||
              sourceType == CONDITION_SOURCE_TYPE_SPELL_CLICK_EVENT ||
              sourceType == CONDITION_SOURCE_TYPE_SMART_EVENT ||
@@ -52,7 +68,7 @@ index ca9c9aee..864c7ed4 100644
  }
  
  bool ConditionMgr::CanHaveSourceIdSet(ConditionSourceType sourceType)
-@@ -1089,6 +1091,16 @@ bool ConditionMgr::IsSpellUsedInSpellClickConditions(uint32 spellId) const
+@@ -1089,6 +1098,16 @@ bool ConditionMgr::IsSpellUsedInSpellClickConditions(uint32 spellId) const
      return SpellsUsedInSpellClickConditions.find(spellId) != SpellsUsedInSpellClickConditions.end();
  }
  
@@ -69,7 +85,7 @@ index ca9c9aee..864c7ed4 100644
  ConditionMgr* ConditionMgr::instance()
  {
      static ConditionMgr instance;
-@@ -1321,6 +1333,13 @@ void ConditionMgr::LoadConditions(bool isReload)
+@@ -1321,6 +1340,13 @@ void ConditionMgr::LoadConditions(bool isReload)
                      ++count;
                      continue;
                  }
@@ -83,7 +99,7 @@ index ca9c9aee..864c7ed4 100644
                  default:
                      break;
              }
-@@ -1892,6 +1911,47 @@ bool ConditionMgr::isSourceTypeValid(Condition* cond) const
+@@ -1892,6 +1918,47 @@ bool ConditionMgr::isSourceTypeValid(Condition* cond) const
              TC_LOG_ERROR("sql.sql", "CONDITION_SOURCE_TYPE_CONVERSATION_LINE: is only for master branch, skipped");
              return false;
          }
@@ -131,7 +147,7 @@ index ca9c9aee..864c7ed4 100644
          case CONDITION_SOURCE_TYPE_GOSSIP_MENU:
          case CONDITION_SOURCE_TYPE_GOSSIP_MENU_OPTION:
          case CONDITION_SOURCE_TYPE_SMART_EVENT:
-@@ -2486,6 +2546,12 @@ void ConditionMgr::Clean()
+@@ -2486,6 +2553,12 @@ void ConditionMgr::Clean()
  
      NpcVendorConditionContainerStore.clear();
  
