@@ -2,8 +2,8 @@
  src/server/game/Conditions/ConditionMgr.h          |   2 +
  src/server/game/Cutscenes/Cutscene.cpp             | 745 ++++++++++++++++++++
  src/server/game/Cutscenes/Cutscene.h               | 160 +++++
- src/server/game/Cutscenes/CutsceneAction.cpp       | 261 +++++++
- src/server/game/Cutscenes/CutsceneAction.h         | 307 ++++++++
+ src/server/game/Cutscenes/CutsceneAction.cpp       | 263 +++++++
+ src/server/game/Cutscenes/CutsceneAction.h         | 303 ++++++++
  src/server/game/Cutscenes/CutsceneMgr.cpp          | 772 +++++++++++++++++++++
  src/server/game/Cutscenes/CutsceneMgr.h            |  87 +++
  src/server/game/Entities/Object/Object.cpp         |  33 +-
@@ -15,11 +15,11 @@
  src/server/game/Maps/Map.h                         |  21 +
  src/server/game/Spells/SpellInfo.cpp               |   5 +
  src/server/game/World/World.cpp                    |   8 +
- src/server/scripts/Custom/cs_cutscene.cpp          |  80 +++
+ src/server/scripts/Custom/cs_cutscene.cpp          | 193 ++++++
  src/server/scripts/Custom/custom_script_loader.cpp |   7 +
  src/server/scripts/Custom/npc_cutscene.cpp         | 110 +++
  src/server/scripts/Custom/spell_cutscene.cpp       |  62 ++
- 21 files changed, 2882 insertions(+), 4 deletions(-)
+ 21 files changed, 2993 insertions(+), 4 deletions(-)
  create mode 100644 src/server/game/Cutscenes/Cutscene.cpp
  create mode 100644 src/server/game/Cutscenes/Cutscene.h
  create mode 100644 src/server/game/Cutscenes/CutsceneAction.cpp
@@ -31,7 +31,7 @@
  create mode 100644 src/server/scripts/Custom/spell_cutscene.cpp
 
 diff --git a/src/server/game/Conditions/ConditionMgr.cpp b/src/server/game/Conditions/ConditionMgr.cpp
-index ca9c9aee..405b0dc3 100644
+index ca9c9aeea..405b0dc35 100644
 --- a/src/server/game/Conditions/ConditionMgr.cpp
 +++ b/src/server/game/Conditions/ConditionMgr.cpp
 @@ -17,6 +17,7 @@
@@ -161,7 +161,7 @@ index ca9c9aee..405b0dc3 100644
      for (std::vector<Condition*>::const_iterator itr = AllocatedMemoryStore.begin(); itr != AllocatedMemoryStore.end(); ++itr)
          delete *itr;
 diff --git a/src/server/game/Conditions/ConditionMgr.h b/src/server/game/Conditions/ConditionMgr.h
-index b31ebb9f..c11a4783 100644
+index b31ebb9f4..c11a4783c 100644
 --- a/src/server/game/Conditions/ConditionMgr.h
 +++ b/src/server/game/Conditions/ConditionMgr.h
 @@ -278,6 +278,7 @@ class TC_GAME_API ConditionMgr
@@ -182,7 +182,7 @@ index b31ebb9f..c11a4783 100644
  #define sConditionMgr ConditionMgr::instance()
 diff --git a/src/server/game/Cutscenes/Cutscene.cpp b/src/server/game/Cutscenes/Cutscene.cpp
 new file mode 100644
-index 00000000..af454955
+index 000000000..af4549555
 --- /dev/null
 +++ b/src/server/game/Cutscenes/Cutscene.cpp
 @@ -0,0 +1,745 @@
@@ -933,7 +933,7 @@ index 00000000..af454955
 +#endif
 diff --git a/src/server/game/Cutscenes/Cutscene.h b/src/server/game/Cutscenes/Cutscene.h
 new file mode 100644
-index 00000000..3ef9f0af
+index 000000000..3ef9f0af8
 --- /dev/null
 +++ b/src/server/game/Cutscenes/Cutscene.h
 @@ -0,0 +1,160 @@
@@ -1099,10 +1099,10 @@ index 00000000..3ef9f0af
 +#endif //CUTSCENE_H_
 diff --git a/src/server/game/Cutscenes/CutsceneAction.cpp b/src/server/game/Cutscenes/CutsceneAction.cpp
 new file mode 100644
-index 00000000..77c84b2e
+index 000000000..44e9344f2
 --- /dev/null
 +++ b/src/server/game/Cutscenes/CutsceneAction.cpp
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,263 @@
 +/*
 + * CutsceneAction
 + */
@@ -1121,6 +1121,7 @@ index 00000000..77c84b2e
 +#include "Player.h"
 +#include "SpellMgr.h"
 +#include "Unit.h"
++#include "G3D/Vector3.h"
 +
 +void CutsceneAction::Perform()
 +{
@@ -1211,9 +1212,10 @@ index 00000000..77c84b2e
 +            {
 +                actor->ToUnit()->SetFacingTo(actor->GetAbsoluteAngle(_actionParams.movementParams.x, _actionParams.movementParams.y) + M_PI);
 +
-+                std::function<void(Movement::MoveSplineInit&)> initializer = [=, target = actor->ToUnit()->GetGUID()](Movement::MoveSplineInit& init)
++                G3D::Vector3 vec3(_actionParams.movementParams.x, _actionParams.movementParams.y, _actionParams.movementParams.z);
++                std::function<void(Movement::MoveSplineInit&)> initializer = [=](Movement::MoveSplineInit& init)
 +                {
-+                    init.MoveTo(_actionParams.movementParams.x,_actionParams.movementParams.y, _actionParams.movementParams.z, false);
++                    init.MoveTo(vec3, false);
 +                    init.SetBackward();
 +                    init.SetWalk(true);
 +                    //init.SetOrientationFixed(true);
@@ -1366,10 +1368,10 @@ index 00000000..77c84b2e
 +#endif
 diff --git a/src/server/game/Cutscenes/CutsceneAction.h b/src/server/game/Cutscenes/CutsceneAction.h
 new file mode 100644
-index 00000000..355c5195
+index 000000000..b88987069
 --- /dev/null
 +++ b/src/server/game/Cutscenes/CutsceneAction.h
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,303 @@
 +/*
 + * CutsceneAction
 + */
@@ -1431,7 +1433,7 @@ index 00000000..355c5195
 +class CutsceneAction
 +{
 +public:
-+    template<CutsceneActionTypes type, class...Ps>
++    template<CutsceneActionTypes type, typename...Ps>
 +    static CutsceneAction Create(Cutscene const* scene, ObjectGuid actorGuid, uint32 timeOffset, Ps&&... params)
 +    {
 +        CutsceneAction action(scene, type, timeOffset, actorGuid);
@@ -1566,19 +1568,15 @@ index 00000000..355c5195
 +            uint32 targetActorId;
 +        } targetActorParams;
 +
-+        enum { RAW_SIZE = sizeof(movementParams) };
-+
-+        char raw[RAW_SIZE];
-+
 +    } _actionParams;
 +
 +    explicit CutsceneAction(Cutscene const* scene, CutsceneActionTypes type, uint32 timeOffset, ObjectGuid actorGuid) :
 +        _scene(scene), _type(type), _timeOffset(timeOffset), _actorGuid(actorGuid)
 +    {
-+        memset(_actionParams.raw, 0, sizeof(_actionParams.raw));
++        memset((uint8*)(&_actionParams), 0, sizeof(_actionParams));
 +    }
 +
-+    template<CutsceneActionTypes type, class...Ps>
++    template<CutsceneActionTypes type, typename...Ps>
 +    void Configure(Ps&&... params)
 +    {
 +#define ASSERT_INIT_PARAMS(p,t)                                                                             \
@@ -1679,7 +1677,7 @@ index 00000000..355c5195
 +#endif //CUTSCENE_ACTION_H_
 diff --git a/src/server/game/Cutscenes/CutsceneMgr.cpp b/src/server/game/Cutscenes/CutsceneMgr.cpp
 new file mode 100644
-index 00000000..a4c856ad
+index 000000000..4dab6cbba
 --- /dev/null
 +++ b/src/server/game/Cutscenes/CutsceneMgr.cpp
 @@ -0,0 +1,772 @@
@@ -1826,12 +1824,12 @@ index 00000000..a4c856ad
 +            uint32 mapId =              field[++index].GetUInt32();
 +            uint32 duration =           field[++index].GetUInt32();
 +
-+            CutsceneData cutActiData(mapId, duration);
++            CutsceneData cutSceneData(mapId, duration);
 +
-+            if (!ValidateCutscene(cutsceneId, cutActiData))
++            if (!ValidateCutscene(cutsceneId, cutSceneData))
 +                continue;
 +
-+            _cutsceneDataMap.insert(decltype(_cutsceneDataMap)::value_type(cutsceneId, std::move(cutActiData)));
++            _cutsceneDataMap.insert(decltype(_cutsceneDataMap)::value_type(cutsceneId, std::move(cutSceneData)));
 +            ++count;
 +
 +        } while (result->NextRow());
@@ -1964,7 +1962,7 @@ index 00000000..a4c856ad
 +
 +    for (auto i = actionBounds.first; i != actionBounds.second; ++i)
 +    {
-+        auto c = i->second;
++        auto const& c = i->second;
 +
 +        auto actorType = CutsceneActorTypes::ACTOR_TYPE_NONE;
 +        for (auto j = actorBounds.first; j != actorBounds.second; ++j)
@@ -2457,7 +2455,7 @@ index 00000000..a4c856ad
 +#endif
 diff --git a/src/server/game/Cutscenes/CutsceneMgr.h b/src/server/game/Cutscenes/CutsceneMgr.h
 new file mode 100644
-index 00000000..7dbd482c
+index 000000000..7dbd482cb
 --- /dev/null
 +++ b/src/server/game/Cutscenes/CutsceneMgr.h
 @@ -0,0 +1,87 @@
@@ -2549,7 +2547,7 @@ index 00000000..7dbd482c
 +
 +#endif //CUTSCENE_MGR_H_
 diff --git a/src/server/game/Entities/Object/Object.cpp b/src/server/game/Entities/Object/Object.cpp
-index 8aa8702a..8a175c37 100644
+index 6e4bb9221..50c17d666 100644
 --- a/src/server/game/Entities/Object/Object.cpp
 +++ b/src/server/game/Entities/Object/Object.cpp
 @@ -22,6 +22,9 @@
@@ -2608,7 +2606,7 @@ index 8aa8702a..8a175c37 100644
      if (!CanDetect(obj, ignoreStealth, checkAlert))
          return false;
  
-@@ -2959,7 +2982,10 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
+@@ -2965,7 +2988,10 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
  
      // check flags
      if (unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_ON_TAXI | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2))
@@ -2620,7 +2618,7 @@ index 8aa8702a..8a175c37 100644
  
      Unit const* unitOrOwner = unit;
      GameObject const* go = ToGameObject();
-@@ -3108,7 +3134,10 @@ bool WorldObject::IsValidAssistTarget(WorldObject const* target, SpellInfo const
+@@ -3114,7 +3140,10 @@ bool WorldObject::IsValidAssistTarget(WorldObject const* target, SpellInfo const
  
      // check flags for negative spells
      if (isNegativeSpell && unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_ON_TAXI | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2))
@@ -2633,7 +2631,7 @@ index 8aa8702a..8a175c37 100644
      if (isNegativeSpell || !bySpell || !bySpell->HasAttribute(SPELL_ATTR6_ASSIST_IGNORE_IMMUNE_FLAG))
      {
 diff --git a/src/server/game/Entities/Object/Object.h b/src/server/game/Entities/Object/Object.h
-index f1fd3825..549e276e 100644
+index f1fd3825e..549e276e1 100644
 --- a/src/server/game/Entities/Object/Object.h
 +++ b/src/server/game/Entities/Object/Object.h
 @@ -54,6 +54,9 @@ class UpdateData;
@@ -2673,7 +2671,7 @@ index f1fd3825..549e276e 100644
          uint32 m_zoneId;
          uint32 m_areaId;
 diff --git a/src/server/game/Entities/Player/Player.cpp b/src/server/game/Entities/Player/Player.cpp
-index c712bd32..2b06feed 100644
+index 079660055..518154080 100644
 --- a/src/server/game/Entities/Player/Player.cpp
 +++ b/src/server/game/Entities/Player/Player.cpp
 @@ -1687,6 +1687,10 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
@@ -2711,7 +2709,7 @@ index c712bd32..2b06feed 100644
      // exist
      GameObject* go = ObjectAccessor::GetGameObject(*this, guid);
      if (!go)
-@@ -25680,6 +25694,11 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
+@@ -25710,6 +25724,11 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
  
  bool Player::IsPetNeedBeTemporaryUnsummoned() const
  {
@@ -2724,7 +2722,7 @@ index c712bd32..2b06feed 100644
  }
  
 diff --git a/src/server/game/Handlers/ChatHandler.cpp b/src/server/game/Handlers/ChatHandler.cpp
-index 6e3d5765..85838e49 100644
+index 6e3d57651..85838e49e 100644
 --- a/src/server/game/Handlers/ChatHandler.cpp
 +++ b/src/server/game/Handlers/ChatHandler.cpp
 @@ -168,6 +168,22 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
@@ -2775,7 +2773,7 @@ index 6e3d5765..85838e49 100644
      ObjectGuid guid;
  
 diff --git a/src/server/game/Handlers/SpellHandler.cpp b/src/server/game/Handlers/SpellHandler.cpp
-index 4bc8da95..70946a7c 100644
+index 4bc8da951..70946a7cb 100644
 --- a/src/server/game/Handlers/SpellHandler.cpp
 +++ b/src/server/game/Handlers/SpellHandler.cpp
 @@ -437,6 +437,16 @@ void WorldSession::HandleCastSpellOpcode(WorldPacket& recvPacket)
@@ -2796,7 +2794,7 @@ index 4bc8da95..70946a7c 100644
  }
  
 diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
-index 11f82a29..2a437acb 100644
+index f54a5553b..6810cd9d2 100644
 --- a/src/server/game/Maps/Map.cpp
 +++ b/src/server/game/Maps/Map.cpp
 @@ -18,6 +18,9 @@
@@ -2809,7 +2807,7 @@ index 11f82a29..2a437acb 100644
  #include "DatabaseEnv.h"
  #include "DisableMgr.h"
  #include "DynamicTree.h"
-@@ -874,6 +877,11 @@ void Map::Update(uint32 t_diff)
+@@ -875,6 +878,11 @@ void Map::Update(uint32 t_diff)
          obj->Update(t_diff);
      }
  
@@ -2821,7 +2819,7 @@ index 11f82a29..2a437acb 100644
      SendObjectUpdates();
  
      ///- Process necessary scripts
-@@ -911,6 +919,73 @@ void Map::Update(uint32 t_diff)
+@@ -912,6 +920,73 @@ void Map::Update(uint32 t_diff)
          TC_METRIC_TAG("map_instanceid", std::to_string(GetInstanceId())));
  }
  
@@ -2895,7 +2893,7 @@ index 11f82a29..2a437acb 100644
  struct ResetNotifier
  {
      template<class T>inline void resetNotify(GridRefManager<T> &m)
-@@ -3529,6 +3604,10 @@ void Map::DelayedUpdate(uint32 t_diff)
+@@ -3530,6 +3605,10 @@ void Map::DelayedUpdate(uint32 t_diff)
  
      RemoveAllObjectsInRemoveList();
  
@@ -2907,7 +2905,7 @@ index 11f82a29..2a437acb 100644
      // This isn't really bother us, since as soon as we have instanced BG-s, the whole map unloads as the BG gets ended
      if (!IsBattlegroundOrArena())
 diff --git a/src/server/game/Maps/Map.h b/src/server/game/Maps/Map.h
-index c926a00f..1fd6d542 100644
+index c926a00f2..1fd6d542c 100644
 --- a/src/server/game/Maps/Map.h
 +++ b/src/server/game/Maps/Map.h
 @@ -41,6 +41,9 @@
@@ -2953,7 +2951,7 @@ index c926a00f..1fd6d542 100644
          void EnsureGridCreated(GridCoord const&);
          void EnsureGridCreated_i(GridCoord const&);
 diff --git a/src/server/game/Spells/SpellInfo.cpp b/src/server/game/Spells/SpellInfo.cpp
-index 9ca42cbd..2c4d6c9e 100644
+index 9ca42cbd0..2c4d6c9e0 100644
 --- a/src/server/game/Spells/SpellInfo.cpp
 +++ b/src/server/game/Spells/SpellInfo.cpp
 @@ -1656,6 +1656,11 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
@@ -2969,7 +2967,7 @@ index 9ca42cbd..2c4d6c9e 100644
  
      // creature/player specific target checks
 diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
-index ed38d250..5b8faa7b 100644
+index ed38d2505..5b8faa7b1 100644
 --- a/src/server/game/World/World.cpp
 +++ b/src/server/game/World/World.cpp
 @@ -39,6 +39,9 @@
@@ -2996,10 +2994,10 @@ index ed38d250..5b8faa7b 100644
  
 diff --git a/src/server/scripts/Custom/cs_cutscene.cpp b/src/server/scripts/Custom/cs_cutscene.cpp
 new file mode 100644
-index 00000000..52b8fe32
+index 000000000..41328026a
 --- /dev/null
 +++ b/src/server/scripts/Custom/cs_cutscene.cpp
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,193 @@
 +/*
 +Name: cs_cutscene
 +%Complete: ???
@@ -3016,9 +3014,12 @@ index 00000000..52b8fe32
 +#include "Chat.h"
 +#include "Cutscene.h"
 +#include "CutsceneMgr.h"
++#include "DatabaseEnv.h"
 +#include "Log.h"
++#include "ObjectMgr.h"
 +#include "RBAC.h"
 +#include "ScriptMgr.h"
++#include "WorldDatabase.h"
 +#include "WorldSession.h"
 +
 +using namespace Trinity::ChatCommands;
@@ -3030,10 +3031,18 @@ index 00000000..52b8fe32
 +
 +    ChatCommandTable GetCommands() const override
 +    {
++        static ChatCommandTable cutsceneCreateCommandTable =
++        {
++            { "scene",          HandleCutsceneCreateSceneCommand,       rbac::RBAC_ROLE_GAMEMASTER,                     Console::No  },
++            { "actor",          HandleCutsceneCreateActorCommand,       rbac::RBAC_ROLE_GAMEMASTER,                     Console::No  },
++            { "action",         HandleCutsceneCreateActionCommand,      rbac::RBAC_ROLE_GAMEMASTER,                     Console::No  },
++        };
++
 +        static ChatCommandTable cutsceneCommandTable =
 +        {
-+            { "testx",          HandleCutsceneTestXCommand,             rbac::RBAC_PERM_COMMAND_NPC_TAME,               Console::No  },
-+            { "reload",         HandleCutsceneReloadCommand,            rbac::RBAC_PERM_COMMAND_NPC_TAME,               Console::Yes },
++            { "testx",          HandleCutsceneTestXCommand,             rbac::RBAC_ROLE_GAMEMASTER,                     Console::No  },
++            { "reload",         HandleCutsceneReloadCommand,            rbac::RBAC_ROLE_GAMEMASTER,                     Console::Yes },
++            { "create",         cutsceneCreateCommandTable                                                                           },
 +        };
 +
 +        static ChatCommandTable commandTable =
@@ -3041,6 +3050,108 @@ index 00000000..52b8fe32
 +            { "cutscene",       cutsceneCommandTable                                                                                 },
 +        };
 +        return commandTable;
++    }
++
++    static bool HandleCutsceneCreateActionCommand(ChatHandler* handler,
++        Optional<std::string_view> comment, Optional<uint32> sceneid, Optional<uint32> actorid, Optional<uint32> timeoffset, Optional<uint32> acttype,
++        Optional<uint32> iparam1, Optional<uint32> iparam2, Optional<uint32> iparam3, Optional<uint32> iparam4, Optional<float> x, Optional<float> y, Optional<float> z, Optional<float> o)
++    {
++        Player const* pl = handler->GetPlayer();
++        if (!comment || !sceneid || !actorid || !timeoffset || !acttype)
++            return false;
++
++        if (*timeoffset > CUTSCENE_MAX_DURATION)
++            return false;
++        if (*acttype == 0 || *acttype >= uint32(CutsceneActionTypes::ACTION_TYPE_END))
++            return false;
++
++        if (!WorldDatabase.PQuery("SELECT entry FROM cutscene_template WHERE entry = %u", *sceneid))
++            return false;
++        if (!WorldDatabase.PQuery("SELECT cutsceneid FROM cutscene_template_actor WHERE cutsceneid = %u AND actorid = %u", *sceneid, *actorid))
++            return false;
++
++        WorldDatabase.PExecute("INSERT INTO cutscene_template_action (cutsceneid, actorid, timeoffset, type, intparam1, intparam2, intparam3, intparam4, x, y, z, o, comment) VALUES (%u,%u,%u,%u,%u,%u,%u,%u,%f,%f,%f,%f,'%s')",
++            *sceneid, *actorid, *timeoffset, *acttype,
++            iparam1.value_or(0), iparam2.value_or(0), iparam3.value_or(0), iparam4.value_or(0),
++            x.value_or(pl->GetPositionX()), y.value_or(pl->GetPositionY()), z.value_or(pl->GetPositionZ()), o.value_or(pl->GetOrientation()),
++            *comment);
++
++        handler->PSendSysMessage("Created new action type: %u at time offset %u for cutscene %u actor %u (NOT VALIDATED)", *acttype, *timeoffset, *sceneid, *actorid);
++        return true;
++    }
++
++    static bool HandleCutsceneCreateActorCommand(ChatHandler* handler, Optional<uint32> sceneid, Optional<uint32> actortype, Optional<int32> entryorguid, Optional<uint32> flags, Optional<std::string_view> name)
++    {
++        Player const* pl = handler->GetPlayer();
++        if (!sceneid || !actortype || !*actortype || *actortype > uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT))
++            return false;
++
++        if ((!entryorguid || !*entryorguid) && *actortype != uint32(CutsceneActorTypes::ACTOR_TYPE_PLAYER))
++            return false;
++
++        if (!WorldDatabase.PQuery("SELECT entry FROM cutscene_template WHERE entry = %u", *sceneid))
++            return false;
++
++        QueryResult actorres = WorldDatabase.PQuery("SELECT MAX(actorid) FROM cutscene_template_actor WHERE cutsceneid = %u", *sceneid);
++        uint32 newactorid = actorres ? actorres->Fetch()->GetUInt32() + 1 : 1u;
++
++        int32 newentryorguid = entryorguid.value_or(0);
++        if (newentryorguid != 0)
++        {
++            if (*actortype != uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT) &&
++                *actortype != uint32(CutsceneActorTypes::ACTOR_TYPE_CREATURE))
++                return false;
++            if (newentryorguid < 0)
++            {
++                if (*actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_CREATURE) && !sObjectMgr->GetCreatureTemplate(-newentryorguid))
++                    return false;
++                if (*actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT) && !sObjectMgr->GetGameObjectTemplate(-newentryorguid))
++                    return false;
++            }
++            else if (newentryorguid > 0)
++            {
++                if (*actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_CREATURE) && !WorldDatabase.PQuery("SELECT id FROM creature WHERE guid = %u", uint32(newentryorguid)))
++                    return false;
++                if (*actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT) && !WorldDatabase.PQuery("SELECT id FROM gameobject WHERE guid = %u", uint32(newentryorguid)))
++                    return false;
++            }
++        }
++
++        if (!flags)
++            flags = 0;
++        if (!name)
++            name = "test" + std::to_string(*sceneid) + " - " + (*actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_CREATURE) ? "creature" : *actortype == uint32(CutsceneActorTypes::ACTOR_TYPE_GAMEOBJECT) ? "go" : "player");
++
++        WorldDatabase.PExecute("INSERT INTO cutscene_template_actor (cutsceneid, actorid, actortype, entryorguid, x, y, z, o, flags, comment) VALUES (%u,%u,%u,%i,%f,%f,%f,%f,%u,'%s')",
++            *sceneid, newactorid, *actortype, newentryorguid, pl->GetPositionX(), pl->GetPositionY(), pl->GetPositionZ(), pl->GetOrientation(), *flags, name->data());
++
++        handler->PSendSysMessage("Created new actor %u (type: %u, entryoroguid: %i) for cutscene %u", newactorid, *actortype, newentryorguid, *sceneid);
++
++        return true;
++    }
++
++    static bool HandleCutsceneCreateSceneCommand(ChatHandler* handler, Optional<uint32> mapid, Optional<uint32> duration, Optional<uint32> flags, Optional<std::string_view> name)
++    {
++        if (!mapid)
++            mapid = handler->GetPlayer()->GetMapId();
++        if (!duration)
++            duration = 5000;
++        if (!flags)
++            flags = 0;
++
++        if (*duration > CUTSCENE_MAX_DURATION)
++            return false;
++
++        QueryResult maxres = WorldDatabase.Query("SELECT MAX(entry) FROM cutscene_template");
++
++        uint32 newentry = maxres ? maxres->Fetch()->GetUInt32() + 1 : 1;
++        char const* newname = name ? name->data() : ("test" + std::to_string(newentry)).c_str();
++
++        WorldDatabase.PExecute("INSERT INTO cutscene_template (entry, mapid, duration, flags, comment) VALUES (%u,%u,%u,%u,'%s')",
++            newentry, *mapid, *duration, *flags, newname);
++
++        handler->PSendSysMessage("Created new blank cutscene %s (id: %u, duration: %u)", newname, newentry, *duration);
++        return true;
 +    }
 +
 +    static bool HandleCutsceneTestXCommand(ChatHandler* handler, Optional<uint32> test)
@@ -3081,7 +3192,7 @@ index 00000000..52b8fe32
 +#pragma warning(pop)
 +#endif
 diff --git a/src/server/scripts/Custom/custom_script_loader.cpp b/src/server/scripts/Custom/custom_script_loader.cpp
-index 9e5e9ba2..00bfab53 100644
+index 9e5e9ba2b..00bfab530 100644
 --- a/src/server/scripts/Custom/custom_script_loader.cpp
 +++ b/src/server/scripts/Custom/custom_script_loader.cpp
 @@ -17,8 +17,15 @@
@@ -3102,7 +3213,7 @@ index 9e5e9ba2..00bfab53 100644
  }
 diff --git a/src/server/scripts/Custom/npc_cutscene.cpp b/src/server/scripts/Custom/npc_cutscene.cpp
 new file mode 100644
-index 00000000..990e2ab1
+index 000000000..990e2ab17
 --- /dev/null
 +++ b/src/server/scripts/Custom/npc_cutscene.cpp
 @@ -0,0 +1,110 @@
@@ -3218,7 +3329,7 @@ index 00000000..990e2ab1
 +#endif
 diff --git a/src/server/scripts/Custom/spell_cutscene.cpp b/src/server/scripts/Custom/spell_cutscene.cpp
 new file mode 100644
-index 00000000..f69cd980
+index 000000000..f69cd9801
 --- /dev/null
 +++ b/src/server/scripts/Custom/spell_cutscene.cpp
 @@ -0,0 +1,62 @@
